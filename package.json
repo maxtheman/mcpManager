@@ -1,0 +1,18 @@
+{
+  "name": "mcpmanager",
+  "private": true,
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "setup": "bun run --cwd apps/gateway doctor -- --fix",
+    "doctor": "bun run --cwd apps/gateway doctor",
+    "status": "bun run --cwd apps/gateway manager status",
+    "centralize": "bun run --cwd apps/gateway manager centralize",
+    "decentralize": "bun run --cwd apps/gateway manager decentralize -- --apply",
+    "dev:desktop": "bun run --cwd apps/desktop tauri dev",
+    "build:desktop": "bun run --cwd apps/desktop build",
+    "dev:gateway": "bun run --cwd apps/gateway dev",
+    "build:gateway:exe": "bun run --cwd apps/gateway build:exe"
+  }
+}
