@@ -36,12 +36,14 @@ type ApplyResult = {
   codex?: ClientInstallStatus | null;
   claude_desktop?: ClientInstallStatus | null;
   claude_code?: ClientInstallStatus | null;
+  cursor?: ClientInstallStatus | null;
   registry_path: string;
 };
 
 type ImportResult = {
   imported_codex: number;
   imported_claude_desktop: number;
+  imported_cursor: number;
   registry: Registry;
   registry_path: string;
 };
@@ -58,8 +60,11 @@ function App() {
   const [applyCodex, setApplyCodex] = useState(true);
   const [applyClaudeDesktop, setApplyClaudeDesktop] = useState(true);
   const [applyClaudeCode, setApplyClaudeCode] = useState(false);
+  const [applyCursor, setApplyCursor] = useState(false);
   const [importCodex, setImportCodex] = useState(true);
   const [importClaudeDesktop, setImportClaudeDesktop] = useState(true);
+  const [importCursor, setImportCursor] = useState(false);
+  const [cursorProjectDir, setCursorProjectDir] = useState("");
   const [lastImport, setLastImport] = useState<ImportResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -157,6 +162,8 @@ function App() {
         codex: applyCodex,
         claude_desktop: applyClaudeDesktop,
         claude_code: applyClaudeCode,
+        cursor: applyCursor,
+        cursor_project_dir: cursorProjectDir.trim() ? cursorProjectDir.trim() : null,
       });
       setApplyResult(res);
       await refreshStatus();
@@ -175,6 +182,8 @@ function App() {
       const res = await invoke<ImportResult>("registry_import_from_clients", {
         codex: importCodex,
         claude_desktop: importClaudeDesktop,
+        cursor: importCursor,
+        cursor_project_dir: cursorProjectDir.trim() ? cursorProjectDir.trim() : null,
       });
       res.registry.upstreams.sort((a, b) => a.id.localeCompare(b.id));
       setRegistry(res.registry);
@@ -301,6 +310,27 @@ function App() {
             />
             Import from Claude Desktop (macOS)
           </label>
+          <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            <input
+              type="checkbox"
+              checked={importCursor}
+              onChange={(e) => setImportCursor(e.target.checked)}
+              disabled={busy}
+            />
+            Import from Cursor project file (`.cursor/mcp.json`)
+          </label>
+          {importCursor || applyCursor ? (
+            <label>
+              Cursor project directory (defaults to current working dir):
+              <input
+                value={cursorProjectDir}
+                onChange={(e) => setCursorProjectDir(e.target.value)}
+                disabled={busy}
+                style={{ width: "100%" }}
+                placeholder="/path/to/your/repo"
+              />
+            </label>
+          ) : null}
           <button onClick={importFromClients} disabled={busy}>
             Import From Existing Configs
           </button>
@@ -423,6 +453,15 @@ function App() {
               disabled={busy}
             />
             Apply to Claude Code CLI (runs `claude mcp add-json/remove`)
+          </label>
+          <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            <input
+              type="checkbox"
+              checked={applyCursor}
+              onChange={(e) => setApplyCursor(e.target.checked)}
+              disabled={busy}
+            />
+            Apply to Cursor project file (`.cursor/mcp.json`)
           </label>
           <button onClick={applyRegistry} disabled={busy}>
             Apply Registry To Clients

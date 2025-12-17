@@ -104,6 +104,10 @@ fn codex_config_path() -> Result<PathBuf> {
     Ok(home_dir()?.join(".codex").join("config.toml"))
 }
 
+fn cursor_mcp_path(project_dir: &Path) -> PathBuf {
+    project_dir.join(".cursor").join("mcp.json")
+}
+
 #[cfg(target_os = "macos")]
 fn claude_desktop_config_path() -> Result<PathBuf> {
     Ok(home_dir()?
@@ -1031,6 +1035,8 @@ struct ApplyArgs {
     codex: bool,
     claude_desktop: bool,
     claude_code: bool,
+    cursor: bool,
+    cursor_project_dir: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1038,6 +1044,7 @@ struct ApplyResult {
     codex: Option<ClientInstallStatus>,
     claude_desktop: Option<ClientInstallStatus>,
     claude_code: Option<ClientInstallStatus>,
+    cursor: Option<ClientInstallStatus>,
     registry_path: String,
 }
 
@@ -1060,14 +1067,171 @@ fn registry_apply(args: ApplyArgs) -> Result<ApplyResult, String> {
         } else {
             None
         };
+        let cursor = if args.cursor {
+            let project_dir = args
+                .cursor_project_dir
+                .as_deref()
+                .map(PathBuf::from)
+                .unwrap_or(std::env::current_dir().context("current_dir")?);
+            Some(apply_registry_to_cursor(&reg, &project_dir)?)
+        } else {
+            None
+        };
         Ok(ApplyResult {
             codex,
             claude_desktop,
             claude_code,
+            cursor,
             registry_path: registry_path()?.to_string_lossy().to_string(),
         })
     })()
     .map_err(|e| e.to_string())
+}
+
+fn import_registry_from_cursor(existing: &mut Registry, project_dir: &Path) -> Result<usize> {
+    let path = cursor_mcp_path(project_dir);
+    if !path.exists() {
+        return Ok(0);
+    }
+    let text = fs::read_to_string(&path).with_context(|| format!("read {:?}", path))?;
+    let v: serde_json::Value = serde_json::from_str(&text).with_context(|| format!("parse JSON {:?}", path))?;
+    let enabled_map = v
+        .get("mcpServers")
+        .and_then(|x| x.as_object())
+        .cloned()
+        .unwrap_or_default();
+    let disabled_map = v
+        .get("mcpServersDisabled")
+        .and_then(|x| x.as_object())
+        .cloned()
+        .unwrap_or_default();
+
+    let mut count = 0usize;
+    for (enabled, map) in [(true, enabled_map), (false, disabled_map)] {
+        for (server_id, server_val) in map.iter() {
+            if server_id == "mcpmanager" {
+                continue;
+            }
+            let server = match server_val.as_object() {
+                Some(o) => o,
+                None => continue,
+            };
+            let command = match server.get("command").and_then(|v| v.as_str()) {
+                Some(s) => s.to_string(),
+                None => continue,
+            };
+            let args = server
+                .get("args")
+                .and_then(|v| v.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            let env_obj = server.get("env").and_then(|v| v.as_object()).cloned();
+            let mut env = std::collections::BTreeMap::new();
+            let mut env_vars = Vec::new();
+            if let Some(map) = env_obj {
+                for (k, v) in map.iter() {
+                    if let Some(s) = v.as_str() {
+                        if s == format!("${{{}}}", k) {
+                            env_vars.push(k.clone());
+                        } else {
+                            env.insert(k.clone(), s.to_string());
+                        }
+                    }
+                }
+            }
+
+            let upstream = Upstream {
+                id: server_id.clone(),
+                enabled,
+                command,
+                args,
+                env,
+                env_vars,
+            };
+
+            let mut replaced = false;
+            for u in existing.upstreams.iter_mut() {
+                if u.id == upstream.id {
+                    *u = upstream.clone();
+                    replaced = true;
+                    break;
+                }
+            }
+            if !replaced {
+                existing.upstreams.push(upstream);
+            }
+            count += 1;
+        }
+    }
+    Ok(count)
+}
+
+fn apply_registry_to_cursor(reg: &Registry, project_dir: &Path) -> Result<ClientInstallStatus> {
+    let path = cursor_mcp_path(project_dir);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).with_context(|| format!("create dir {parent:?}"))?;
+    }
+
+    let existing: serde_json::Value = if path.exists() {
+        serde_json::from_str(&fs::read_to_string(&path).with_context(|| format!("read {:?}", path))?)
+            .unwrap_or(serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+
+    let mut other = existing.as_object().cloned().unwrap_or_default();
+    let mut enabled_map: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
+    let mut disabled_map: serde_json::Map<String, serde_json::Value> = other
+        .get("mcpServersDisabled")
+        .and_then(|v| v.as_object())
+        .cloned()
+        .unwrap_or_default();
+
+    for u in reg.upstreams.iter() {
+        if u.id == "mcpmanager" {
+            continue;
+        }
+        let mut env = serde_json::Map::new();
+        for (k, v) in u.env.iter() {
+            env.insert(k.clone(), serde_json::Value::String(v.clone()));
+        }
+        for k in u.env_vars.iter() {
+            env.insert(k.clone(), serde_json::Value::String(format!("${{{}}}", k)));
+        }
+        let server = serde_json::json!({
+          "command": u.command,
+          "args": u.args,
+          "env": env
+        });
+        if u.enabled {
+            enabled_map.insert(u.id.clone(), server);
+            disabled_map.remove(&u.id);
+        } else {
+            disabled_map.insert(u.id.clone(), server);
+        }
+    }
+
+    other.insert("mcpServers".to_string(), serde_json::Value::Object(enabled_map));
+    if !disabled_map.is_empty() {
+        other.insert(
+            "mcpServersDisabled".to_string(),
+            serde_json::Value::Object(disabled_map),
+        );
+    } else {
+        other.remove("mcpServersDisabled");
+    }
+
+    let text = serde_json::to_string_pretty(&serde_json::Value::Object(other))?;
+    write_with_backup(&path, (text + "\n").as_bytes())?;
+    Ok(ClientInstallStatus {
+        detected: true,
+        installed: true,
+        details: Some(format!("Updated {}", path.to_string_lossy())),
+    })
 }
 
 fn import_registry_from_codex(existing: &mut Registry) -> Result<usize> {
@@ -1237,12 +1401,15 @@ fn import_registry_from_claude_desktop(existing: &mut Registry) -> Result<usize>
 struct ImportArgs {
     codex: bool,
     claude_desktop: bool,
+    cursor: bool,
+    cursor_project_dir: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
 struct ImportResult {
     imported_codex: usize,
     imported_claude_desktop: usize,
+    imported_cursor: usize,
     registry: Registry,
     registry_path: String,
 }
@@ -1254,17 +1421,27 @@ fn registry_import_from_clients(args: ImportArgs) -> Result<ImportResult, String
         reg.version = 1;
         let mut imported_codex = 0usize;
         let mut imported_claude_desktop = 0usize;
+        let mut imported_cursor = 0usize;
         if args.codex {
             imported_codex = import_registry_from_codex(&mut reg)?;
         }
         if args.claude_desktop {
             imported_claude_desktop = import_registry_from_claude_desktop(&mut reg)?;
         }
+        if args.cursor {
+            let project_dir = args
+                .cursor_project_dir
+                .as_deref()
+                .map(PathBuf::from)
+                .unwrap_or(std::env::current_dir().context("current_dir")?);
+            imported_cursor = import_registry_from_cursor(&mut reg, &project_dir)?;
+        }
         reg.upstreams.sort_by(|a, b| a.id.cmp(&b.id));
         write_registry(&reg)?;
         Ok(ImportResult {
             imported_codex,
             imported_claude_desktop,
+            imported_cursor,
             registry: reg,
             registry_path: registry_path()?.to_string_lossy().to_string(),
         })
@@ -1506,6 +1683,54 @@ enabled = true
             assert!(reg.upstreams.iter().any(|u| u.id == "bbb" && !u.enabled));
             let aaa = reg.upstreams.iter().find(|u| u.id == "aaa").unwrap();
             assert!(aaa.env_vars.iter().any(|v| v == "A"));
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn imports_from_cursor_project_file() {
+        with_temp_home(|home| {
+            let repo = home.join("repo");
+            fs::create_dir_all(repo.join(".cursor")).unwrap();
+            fs::write(
+                repo.join(".cursor/mcp.json"),
+                r#"{ "mcpServers": { "ccc": { "command":"npx","args":["-y","ccc"],"env": { "X":"${X}" } } } }"#,
+            )
+            .unwrap();
+
+            let mut reg = read_registry().unwrap();
+            let n = import_registry_from_cursor(&mut reg, &repo).unwrap();
+            assert_eq!(n, 1);
+            assert!(reg.upstreams.iter().any(|u| u.id == "ccc" && u.enabled));
+            let c = reg.upstreams.iter().find(|u| u.id == "ccc").unwrap();
+            assert!(c.env_vars.iter().any(|v| v == "X"));
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn apply_writes_cursor_project_file() {
+        with_temp_home(|home| {
+            let repo = home.join("repo");
+            fs::create_dir_all(&repo).unwrap();
+            let reg = Registry {
+                version: 1,
+                upstreams: vec![Upstream {
+                    id: "ddd".to_string(),
+                    enabled: true,
+                    command: "npx".to_string(),
+                    args: vec!["-y".to_string(), "ddd".to_string()],
+                    env: Default::default(),
+                    env_vars: vec![],
+                }],
+            };
+            let status = apply_registry_to_cursor(&reg, &repo).unwrap();
+            assert!(status.installed);
+            let p = repo.join(".cursor/mcp.json");
+            assert!(p.exists());
+            let json = fs::read_to_string(p).unwrap();
+            let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+            assert!(v["mcpServers"]["ddd"].is_object());
         });
     }
 }
