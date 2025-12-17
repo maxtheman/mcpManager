@@ -3,11 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import "./App.css";
 
 type BinaryStatus = { path: string; exists: boolean };
-type ClientInstallStatus = {
-  detected: boolean;
-  installed: boolean;
-  details?: string | null;
-};
+type ClientInstallStatus = { detected: boolean; installed: boolean; details?: string | null };
 type StatusResult = {
   gateway: BinaryStatus;
   codex: ClientInstallStatus;
@@ -20,7 +16,6 @@ type InstallResult = {
   claude_desktop: ClientInstallStatus;
   claude_code: ClientInstallStatus;
 };
-
 type Upstream = {
   id: string;
   enabled: boolean;
@@ -29,9 +24,7 @@ type Upstream = {
   env: Record<string, string>;
   env_vars: string[];
 };
-
 type Registry = { version: number; upstreams: Upstream[] };
-
 type ApplyResult = {
   codex?: ClientInstallStatus | null;
   claude_desktop?: ClientInstallStatus | null;
@@ -39,7 +32,6 @@ type ApplyResult = {
   cursor?: ClientInstallStatus | null;
   registry_path: string;
 };
-
 type ImportResult = {
   imported_codex: number;
   imported_claude_desktop: number;
@@ -48,34 +40,54 @@ type ImportResult = {
   registry_path: string;
 };
 
+type Tab = "dashboard" | "servers" | "apply";
+
+function okLabel(s: ClientInstallStatus | null | undefined) {
+  if (!s) return "skipped";
+  return s.installed ? "ok" : s.detected ? "failed" : "skipped";
+}
+
+function maskEnv(env: Record<string, string>) {
+  const keys = Object.keys(env).sort();
+  if (!keys.length) return null;
+  return keys.map((k) => `${k}=*****`).join(", ");
+}
+
 function App() {
+  const [tab, setTab] = useState<Tab>("dashboard");
   const [status, setStatus] = useState<StatusResult | null>(null);
-  const [installResult, setInstallResult] = useState<InstallResult | null>(
-    null,
-  );
+  const [installResult, setInstallResult] = useState<InstallResult | null>(null);
   const [registry, setRegistry] = useState<Registry | null>(null);
   const [applyResult, setApplyResult] = useState<ApplyResult | null>(null);
+  const [importResult, setImportResult] = useState<ImportResult | null>(null);
   const [snippetId, setSnippetId] = useState("");
   const [snippet, setSnippet] = useState("");
+  const [expandedServer, setExpandedServer] = useState<string | null>(null);
+
+  const [importCodex, setImportCodex] = useState(true);
+  const [importClaudeDesktop, setImportClaudeDesktop] = useState(true);
+  const [importCursor, setImportCursor] = useState(false);
+
   const [applyCodex, setApplyCodex] = useState(true);
   const [applyClaudeDesktop, setApplyClaudeDesktop] = useState(true);
   const [applyClaudeCode, setApplyClaudeCode] = useState(false);
   const [applyCursor, setApplyCursor] = useState(false);
-  const [importCodex, setImportCodex] = useState(true);
-  const [importClaudeDesktop, setImportClaudeDesktop] = useState(true);
-  const [importCursor, setImportCursor] = useState(false);
+
   const [cursorProjectDir, setCursorProjectDir] = useState("");
-  const [lastImport, setLastImport] = useState<ImportResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const canAct = useMemo(() => !busy, [busy]);
 
-  const canInstall = useMemo(() => !busy, [busy]);
-
-  async function refreshStatus() {
+  async function refreshAll() {
     setError(null);
     try {
-      const next = await invoke<StatusResult>("get_status");
-      setStatus(next);
+      const [st, reg] = await Promise.all([
+        invoke<StatusResult>("get_status"),
+        invoke<Registry>("registry_get"),
+      ]);
+      reg.upstreams.sort((a, b) => a.id.localeCompare(b.id));
+      setStatus(st);
+      setRegistry(reg);
     } catch (e) {
       setError(String(e));
     }
@@ -88,7 +100,7 @@ function App() {
     try {
       const res = await invoke<InstallResult>("install_gateway_everywhere");
       setInstallResult(res);
-      await refreshStatus();
+      await refreshAll();
     } catch (e) {
       setError(String(e));
     } finally {
@@ -96,28 +108,39 @@ function App() {
     }
   }
 
-  async function refreshRegistry() {
+  async function importFromClients() {
+    setBusy(true);
     setError(null);
+    setImportResult(null);
     try {
-      const next = await invoke<Registry>("registry_get");
-      next.upstreams.sort((a, b) => a.id.localeCompare(b.id));
-      setRegistry(next);
+      const res = await invoke<ImportResult>("registry_import_from_clients", {
+        codex: importCodex,
+        claude_desktop: importClaudeDesktop,
+        cursor: importCursor,
+        cursor_project_dir: cursorProjectDir.trim() ? cursorProjectDir.trim() : null,
+      });
+      res.registry.upstreams.sort((a, b) => a.id.localeCompare(b.id));
+      setRegistry(res.registry);
+      setImportResult(res);
     } catch (e) {
       setError(String(e));
+    } finally {
+      setBusy(false);
     }
   }
 
   async function addFromSnippet() {
     setBusy(true);
     setError(null);
-    setApplyResult(null);
     try {
       await invoke<Upstream>("registry_add_from_snippet", {
         id: snippetId.trim() ? snippetId.trim() : null,
         snippet,
       });
       setSnippet("");
-      await refreshRegistry();
+      setSnippetId("");
+      await refreshAll();
+      setTab("servers");
     } catch (e) {
       setError(String(e));
     } finally {
@@ -146,6 +169,7 @@ function App() {
       const next = await invoke<Registry>("registry_remove", { id });
       next.upstreams.sort((a, b) => a.id.localeCompare(b.id));
       setRegistry(next);
+      if (expandedServer === id) setExpandedServer(null);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -166,28 +190,8 @@ function App() {
         cursor_project_dir: cursorProjectDir.trim() ? cursorProjectDir.trim() : null,
       });
       setApplyResult(res);
-      await refreshStatus();
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function importFromClients() {
-    setBusy(true);
-    setError(null);
-    setLastImport(null);
-    try {
-      const res = await invoke<ImportResult>("registry_import_from_clients", {
-        codex: importCodex,
-        claude_desktop: importClaudeDesktop,
-        cursor: importCursor,
-        cursor_project_dir: cursorProjectDir.trim() ? cursorProjectDir.trim() : null,
-      });
-      res.registry.upstreams.sort((a, b) => a.id.localeCompare(b.id));
-      setRegistry(res.registry);
-      setLastImport(res);
+      await refreshAll();
+      setTab("dashboard");
     } catch (e) {
       setError(String(e));
     } finally {
@@ -196,288 +200,386 @@ function App() {
   }
 
   useEffect(() => {
-    refreshStatus();
-    refreshRegistry();
+    refreshAll();
   }, []);
 
   return (
-    <main className="container">
-      <h1>mcpManager</h1>
-      <p>Installs the local MCP gateway and registers it with Codex / Claude.</p>
-
-      <div className="row">
-        <button onClick={refreshStatus} disabled={busy}>
-          Refresh
-        </button>
-        <button onClick={installEverywhere} disabled={!canInstall}>
-          {busy ? "Working…" : "Install / Update + Register"}
-        </button>
-        <button onClick={refreshRegistry} disabled={busy}>
-          Refresh Servers
-        </button>
-      </div>
-
-      {error ? (
-        <p style={{ color: "crimson", whiteSpace: "pre-wrap" }}>{error}</p>
-      ) : null}
-
-      {status ? (
-        <div style={{ textAlign: "left", maxWidth: 900, margin: "0 auto" }}>
-          <h2>Status</h2>
-          <ul>
-            <li>
-              Gateway binary:{" "}
-              <code>{status.gateway.path}</code>{" "}
-              {status.gateway.exists ? "(present)" : "(missing)"}
-            </li>
-            <li>
-              Codex: {status.codex.installed ? "installed" : "not installed"}{" "}
-              <span style={{ opacity: 0.7 }}>
-                (<code>{status.codex.details}</code>)
-              </span>
-            </li>
-            <li>
-              Claude Desktop:{" "}
-              {status.claude_desktop.installed ? "installed" : "not installed"}{" "}
-              <span style={{ opacity: 0.7 }}>
-                (<code>{status.claude_desktop.details}</code>)
-              </span>
-            </li>
-            <li>
-              Claude Code CLI:{" "}
-              {status.claude_code.detected ? "detected" : "not found"}{" "}
-              {status.claude_code.installed ? "(installed)" : ""}
-            </li>
-          </ul>
+    <div className="appShell">
+      <aside className="sidebar">
+        <div className="brand">
+          <div className="brandTitle">mcpManager</div>
+          <div className="brandSub">Registry → clients</div>
         </div>
-      ) : null}
 
-      {installResult ? (
-        <div style={{ textAlign: "left", maxWidth: 900, margin: "0 auto" }}>
-          <h2>Last install</h2>
-          <ul>
-            <li>
-              Gateway path: <code>{installResult.gateway_path}</code>
-            </li>
-            <li>
-              Codex:{" "}
-              {installResult.codex.installed ? "ok" : "failed"}{" "}
-              <span style={{ opacity: 0.7 }}>{installResult.codex.details}</span>
-            </li>
-            <li>
-              Claude Desktop:{" "}
-              {installResult.claude_desktop.installed ? "ok" : "failed"}{" "}
-              <span style={{ opacity: 0.7 }}>
-                {installResult.claude_desktop.details}
-              </span>
-            </li>
-            <li>
-              Claude Code:{" "}
-              {installResult.claude_code.installed ? "ok" : "skipped/failed"}{" "}
-              <span style={{ opacity: 0.7 }}>
-                {installResult.claude_code.details}
-              </span>
-            </li>
-          </ul>
-        </div>
-      ) : null}
-
-      <div style={{ textAlign: "left", maxWidth: 900, margin: "24px auto" }}>
-        <h2>Servers</h2>
-        <p style={{ opacity: 0.8 }}>
-          Paste a server snippet (Codex TOML, Claude Desktop JSON, or a line from{" "}
-          <code>claude mcp list</code>) and mcpManager will store it in{" "}
-          <code>~/.mcpmanager/registry.json</code>. Toggle enabled/disabled, then apply to clients.
-        </p>
-
-        <div style={{ display: "grid", gap: 6, maxWidth: 520, marginBottom: 14 }}>
-          <h3 style={{ margin: 0 }}>Import</h3>
-          <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
-            <input
-              type="checkbox"
-              checked={importCodex}
-              onChange={(e) => setImportCodex(e.target.checked)}
-              disabled={busy}
-            />
-            Import from Codex (`~/.codex/config.toml`)
-          </label>
-          <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
-            <input
-              type="checkbox"
-              checked={importClaudeDesktop}
-              onChange={(e) => setImportClaudeDesktop(e.target.checked)}
-              disabled={busy}
-            />
-            Import from Claude Desktop (macOS)
-          </label>
-          <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
-            <input
-              type="checkbox"
-              checked={importCursor}
-              onChange={(e) => setImportCursor(e.target.checked)}
-              disabled={busy}
-            />
-            Import from Cursor project file (`.cursor/mcp.json`)
-          </label>
-          {importCursor || applyCursor ? (
-            <label>
-              Cursor project directory (defaults to current working dir):
-              <input
-                value={cursorProjectDir}
-                onChange={(e) => setCursorProjectDir(e.target.value)}
-                disabled={busy}
-                style={{ width: "100%" }}
-                placeholder="/path/to/your/repo"
-              />
-            </label>
-          ) : null}
-          <button onClick={importFromClients} disabled={busy}>
-            Import From Existing Configs
+        <nav className="nav">
+          <button
+            className={tab === "dashboard" ? "navBtn navBtnActive" : "navBtn"}
+            onClick={() => setTab("dashboard")}
+            disabled={busy}
+          >
+            Dashboard
           </button>
-          {lastImport ? (
-            <pre style={{ whiteSpace: "pre-wrap", margin: 0 }}>
-              {JSON.stringify(lastImport, null, 2)}
-            </pre>
-          ) : null}
-        </div>
+          <button
+            className={tab === "servers" ? "navBtn navBtnActive" : "navBtn"}
+            onClick={() => setTab("servers")}
+            disabled={busy}
+          >
+            Servers
+          </button>
+          <button
+            className={tab === "apply" ? "navBtn navBtnActive" : "navBtn"}
+            onClick={() => setTab("apply")}
+            disabled={busy}
+          >
+            Apply
+          </button>
+        </nav>
 
-        <div style={{ display: "grid", gap: 8 }}>
-          <label>
-            Optional ID override (if snippet doesn't contain a name):{" "}
-            <input
-              value={snippetId}
-              onChange={(e) => setSnippetId(e.target.value)}
-              disabled={busy}
-              style={{ width: "100%" }}
-              placeholder="e.g. playwright2"
-            />
-          </label>
-          <label>
-            Snippet:
-            <textarea
-              value={snippet}
-              onChange={(e) => setSnippet(e.target.value)}
-              disabled={busy}
-              style={{ width: "100%", minHeight: 120 }}
-              placeholder={`Examples:\n\n[mcp_servers.playwright]\ncommand = \"npx\"\nargs = [\"@playwright/mcp@latest\"]\n\nor\n\n{\"command\":\"npx\",\"args\":[\"-y\",\"@playwright/mcp@latest\"],\"env\":{\"API_KEY\":\"...\"}}\n\nor\n\nplaywright: npx -y @playwright/mcp@latest - ✓ Connected`}
-            />
-          </label>
-          <div className="row">
-            <button onClick={addFromSnippet} disabled={busy || !snippet.trim()}>
-              Add / Update From Snippet
-            </button>
+        <div className="sidebarFooter">
+          <button className="primaryBtn" onClick={refreshAll} disabled={!canAct}>
+            Refresh
+          </button>
+          <button onClick={installEverywhere} disabled={!canAct}>
+            Install Gateway
+          </button>
+        </div>
+      </aside>
+
+      <section className="content">
+        <header className="topbar">
+          <div className="topbarTitle">
+            {tab === "dashboard" ? "Dashboard" : tab === "servers" ? "Servers" : "Apply"}
           </div>
-        </div>
+          {busy ? <div className="pill">Working…</div> : null}
+        </header>
 
-        <h3 style={{ marginTop: 18 }}>Registry</h3>
-        {registry ? (
-          registry.upstreams.length ? (
-            <ul>
-              {registry.upstreams.map((u) => (
-                <li key={u.id} style={{ marginBottom: 10 }}>
-                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                    <code style={{ minWidth: 140 }}>{u.id}</code>
-                    <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                      <input
-                        type="checkbox"
-                        checked={u.enabled}
-                        onChange={(e) => toggleServer(u.id, e.target.checked)}
-                        disabled={busy}
-                      />
-                      enabled
-                    </label>
-                    <button onClick={() => removeServer(u.id)} disabled={busy}>
-                      Remove
-                    </button>
-                  </div>
-                  <div style={{ opacity: 0.85 }}>
-                    <div>
-                      <span style={{ opacity: 0.7 }}>Command:</span>{" "}
-                      <code>
-                        {u.command} {u.args.join(" ")}
-                      </code>
-                    </div>
-                    {Object.keys(u.env).length ? (
-                      <div>
-                        <span style={{ opacity: 0.7 }}>Env:</span>{" "}
-                        <code>
-                          {Object.keys(u.env)
-                            .sort()
-                            .map((k) => `${k}=*****`)
-                            .join(", ")}
-                        </code>
-                      </div>
-                    ) : null}
-                    {u.env_vars.length ? (
-                      <div>
-                        <span style={{ opacity: 0.7 }}>Env Vars:</span>{" "}
-                        <code>{u.env_vars.slice().sort().join(", ")}</code>
-                      </div>
-                    ) : null}
-                  </div>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <p style={{ opacity: 0.8 }}>No servers in registry yet.</p>
-          )
-        ) : (
-          <p style={{ opacity: 0.8 }}>Loading…</p>
-        )}
+        {error ? <div className="errorBox">{error}</div> : null}
 
-        <h3 style={{ marginTop: 18 }}>Apply</h3>
-        <div style={{ display: "grid", gap: 6, maxWidth: 520 }}>
-          <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
-            <input
-              type="checkbox"
-              checked={applyCodex}
-              onChange={(e) => setApplyCodex(e.target.checked)}
-              disabled={busy}
-            />
-            Write to Codex config (`~/.codex/config.toml`)
-          </label>
-          <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
-            <input
-              type="checkbox"
-              checked={applyClaudeDesktop}
-              onChange={(e) => setApplyClaudeDesktop(e.target.checked)}
-              disabled={busy}
-            />
-            Write to Claude Desktop config (macOS)
-          </label>
-          <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
-            <input
-              type="checkbox"
-              checked={applyClaudeCode}
-              onChange={(e) => setApplyClaudeCode(e.target.checked)}
-              disabled={busy}
-            />
-            Apply to Claude Code CLI (runs `claude mcp add-json/remove`)
-          </label>
-          <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
-            <input
-              type="checkbox"
-              checked={applyCursor}
-              onChange={(e) => setApplyCursor(e.target.checked)}
-              disabled={busy}
-            />
-            Apply to Cursor project file (`.cursor/mcp.json`)
-          </label>
-          <button onClick={applyRegistry} disabled={busy}>
-            Apply Registry To Clients
-          </button>
-        </div>
+        {tab === "dashboard" ? (
+          <div className="grid">
+            <div className="card">
+              <div className="cardTitle">Gateway</div>
+              <div className="kv">
+                <div className="k">Binary</div>
+                <div className="v">
+                  {status ? (
+                    <>
+                      <code>{status.gateway.path}</code>{" "}
+                      <span className={status.gateway.exists ? "ok" : "bad"}>
+                        {status.gateway.exists ? "present" : "missing"}
+                      </span>
+                    </>
+                  ) : (
+                    "…"
+                  )}
+                </div>
+              </div>
+              {installResult ? (
+                <div className="note">
+                  Last install: <code>{installResult.gateway_path}</code>
+                </div>
+              ) : null}
+            </div>
 
-        {applyResult ? (
-          <div style={{ marginTop: 12 }}>
-            <h4>Last apply</h4>
-            <pre style={{ whiteSpace: "pre-wrap" }}>
-              {JSON.stringify(applyResult, null, 2)}
-            </pre>
+            <div className="card">
+              <div className="cardTitle">Clients</div>
+              <div className="kv">
+                <div className="k">Codex</div>
+                <div className="v">
+                  <span className={status?.codex?.installed ? "ok" : "bad"}>
+                    {status?.codex?.installed ? "ok" : "not installed"}
+                  </span>{" "}
+                  {status?.codex?.details ? <code>{status.codex.details}</code> : null}
+                </div>
+              </div>
+              <div className="kv">
+                <div className="k">Claude Desktop</div>
+                <div className="v">
+                  <span className={status?.claude_desktop?.installed ? "ok" : "bad"}>
+                    {status?.claude_desktop?.installed ? "ok" : "not installed"}
+                  </span>{" "}
+                  {status?.claude_desktop?.details ? (
+                    <code>{status.claude_desktop.details}</code>
+                  ) : null}
+                </div>
+              </div>
+              <div className="kv">
+                <div className="k">Claude Code</div>
+                <div className="v">
+                  {status?.claude_code?.detected ? "detected" : "not found"}
+                </div>
+              </div>
+              {applyResult ? (
+                <div className="note">
+                  Last apply: Codex {okLabel(applyResult.codex)}, Claude Desktop{" "}
+                  {okLabel(applyResult.claude_desktop)}, Claude Code{" "}
+                  {okLabel(applyResult.claude_code)}, Cursor {okLabel(applyResult.cursor)}
+                </div>
+              ) : null}
+            </div>
+
+            <div className="card">
+              <div className="cardTitle">Registry</div>
+              <div className="kv">
+                <div className="k">Servers</div>
+                <div className="v">
+                  {registry ? (
+                    <>
+                      {registry.upstreams.length}{" "}
+                      <span className="muted">
+                        ({registry.upstreams.filter((u) => u.enabled).length} enabled)
+                      </span>
+                    </>
+                  ) : (
+                    "…"
+                  )}
+                </div>
+              </div>
+              <div className="note">
+                Use the Servers tab to import existing configs or paste a new server.
+              </div>
+            </div>
           </div>
         ) : null}
-      </div>
-    </main>
+
+        {tab === "servers" ? (
+          <div className="stack">
+            <div className="card">
+              <div className="cardTitle">Add / Import</div>
+              <div className="split">
+                <div>
+                  <div className="sectionTitle">Import from configs</div>
+                  <div className="checks">
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={importCodex}
+                        onChange={(e) => setImportCodex(e.target.checked)}
+                        disabled={busy}
+                      />{" "}
+                      Codex
+                    </label>
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={importClaudeDesktop}
+                        onChange={(e) => setImportClaudeDesktop(e.target.checked)}
+                        disabled={busy}
+                      />{" "}
+                      Claude Desktop
+                    </label>
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={importCursor}
+                        onChange={(e) => setImportCursor(e.target.checked)}
+                        disabled={busy}
+                      />{" "}
+                      Cursor project (`.cursor/mcp.json`)
+                    </label>
+                  </div>
+                  {importCursor ? (
+                    <input
+                      value={cursorProjectDir}
+                      onChange={(e) => setCursorProjectDir(e.target.value)}
+                      disabled={busy}
+                      placeholder="Cursor project dir (optional)"
+                    />
+                  ) : null}
+                  <div className="toolbar">
+                    <button onClick={importFromClients} disabled={!canAct}>
+                      Import
+                    </button>
+                    {importResult ? (
+                      <div className="muted">
+                        Imported: Codex {importResult.imported_codex}, Claude Desktop{" "}
+                        {importResult.imported_claude_desktop}, Cursor{" "}
+                        {importResult.imported_cursor}
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+
+                <div>
+                  <div className="sectionTitle">Paste a server</div>
+                  <input
+                    value={snippetId}
+                    onChange={(e) => setSnippetId(e.target.value)}
+                    disabled={busy}
+                    placeholder="Optional ID override"
+                  />
+                  <textarea
+                    value={snippet}
+                    onChange={(e) => setSnippet(e.target.value)}
+                    disabled={busy}
+                    placeholder="Paste Codex TOML, Claude Desktop JSON, or a `claude mcp list` line"
+                  />
+                  <div className="toolbar">
+                    <button onClick={addFromSnippet} disabled={!canAct || !snippet.trim()}>
+                      Add / Update
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="card">
+              <div className="cardTitle">Servers</div>
+              {!registry ? (
+                <div className="muted">Loading…</div>
+              ) : registry.upstreams.length === 0 ? (
+                <div className="muted">No servers yet. Import or paste one above.</div>
+              ) : (
+                <div className="table">
+                  {registry.upstreams.map((u) => {
+                    const open = expandedServer === u.id;
+                    return (
+                      <div key={u.id} className={open ? "rowItem rowOpen" : "rowItem"}>
+                        <div className="rowMain">
+                          <label className="toggle">
+                            <input
+                              type="checkbox"
+                              checked={u.enabled}
+                              onChange={(e) => toggleServer(u.id, e.target.checked)}
+                              disabled={busy}
+                            />
+                            <span className="toggleLabel">{u.enabled ? "on" : "off"}</span>
+                          </label>
+
+                          <button
+                            className="rowName"
+                            onClick={() => setExpandedServer(open ? null : u.id)}
+                            disabled={busy}
+                            title="Show details"
+                          >
+                            <code>{u.id}</code>
+                          </button>
+
+                          <div className="rowCmd" title={`${u.command} ${u.args.join(" ")}`}>
+                            <code>
+                              {u.command} {u.args.join(" ")}
+                            </code>
+                          </div>
+
+                          <div className="rowActions">
+                            <button onClick={() => removeServer(u.id)} disabled={busy}>
+                              Remove
+                            </button>
+                          </div>
+                        </div>
+
+                        {open ? (
+                          <div className="rowDetails">
+                            {maskEnv(u.env) ? (
+                              <div>
+                                <span className="muted">Env:</span> <code>{maskEnv(u.env)}</code>
+                              </div>
+                            ) : null}
+                            {u.env_vars.length ? (
+                              <div>
+                                <span className="muted">Env Vars:</span>{" "}
+                                <code>{u.env_vars.slice().sort().join(", ")}</code>
+                              </div>
+                            ) : null}
+                          </div>
+                        ) : null}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        ) : null}
+
+        {tab === "apply" ? (
+          <div className="stack">
+            <div className="card">
+              <div className="cardTitle">Targets</div>
+              <div className="checks">
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={applyCodex}
+                    onChange={(e) => setApplyCodex(e.target.checked)}
+                    disabled={busy}
+                  />{" "}
+                  Codex
+                </label>
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={applyClaudeDesktop}
+                    onChange={(e) => setApplyClaudeDesktop(e.target.checked)}
+                    disabled={busy}
+                  />{" "}
+                  Claude Desktop
+                </label>
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={applyClaudeCode}
+                    onChange={(e) => setApplyClaudeCode(e.target.checked)}
+                    disabled={busy}
+                  />{" "}
+                  Claude Code
+                </label>
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={applyCursor}
+                    onChange={(e) => setApplyCursor(e.target.checked)}
+                    disabled={busy}
+                  />{" "}
+                  Cursor project (`.cursor/mcp.json`)
+                </label>
+              </div>
+              {applyCursor ? (
+                <input
+                  value={cursorProjectDir}
+                  onChange={(e) => setCursorProjectDir(e.target.value)}
+                  disabled={busy}
+                  placeholder="Cursor project dir (optional)"
+                />
+              ) : null}
+              <div className="toolbar">
+                <button className="primaryBtn" onClick={applyRegistry} disabled={!canAct}>
+                  Apply
+                </button>
+                <div className="muted">
+                  Writes enabled servers and moves disabled ones into disabled sections.
+                </div>
+              </div>
+            </div>
+
+            {applyResult ? (
+              <div className="card">
+                <div className="cardTitle">Last apply</div>
+                <div className="kv">
+                  <div className="k">Codex</div>
+                  <div className="v">{okLabel(applyResult.codex)}</div>
+                </div>
+                <div className="kv">
+                  <div className="k">Claude Desktop</div>
+                  <div className="v">{okLabel(applyResult.claude_desktop)}</div>
+                </div>
+                <div className="kv">
+                  <div className="k">Claude Code</div>
+                  <div className="v">{okLabel(applyResult.claude_code)}</div>
+                </div>
+                <div className="kv">
+                  <div className="k">Cursor</div>
+                  <div className="v">{okLabel(applyResult.cursor)}</div>
+                </div>
+                <div className="note">
+                  Registry: <code>{applyResult.registry_path}</code>
+                </div>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+      </section>
+    </div>
   );
 }
 
