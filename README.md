@@ -58,6 +58,9 @@ If you run multiple Playwright MCP servers as upstreams, you can enable a simple
 - Set `MCPMANAGER_PLAYWRIGHT_POOL=playwright1,playwright2` (upstream IDs in `~/.mcpmanager/registry.json`)
 - Call `playwright_pool.reserve` to get an `upstreamId`
 - Use only that prefix for tool calls (e.g. `playwright1.browser_navigate`)
+
+Smoke test (runs 2 “agents” concurrently and asserts they reserve different slots):
+- `bun run test:playwright-pool`
 - Installer that puts the gateway at `~/.mcpmanager/bin/mcpmanager-gateway` and registers it into:
   - Codex: `~/.codex/config.toml`
   - Claude Desktop (macOS): `~/Library/Application Support/Claude/claude_desktop_config.json`

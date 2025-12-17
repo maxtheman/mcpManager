@@ -8,6 +8,7 @@
     "manager": "bun src/manager-cli.ts",
     "doctor": "bun src/manager-cli.ts doctor",
     "install:clients": "bun src/manager-cli.ts install",
+    "test:playwright-pool": "bun scripts/test-playwright-pool.ts",
     "build": "bun build src/cli.ts --outdir dist --target bun",
     "build:exe": "bun build --compile src/cli.ts --outfile dist/mcpmanager-gateway",
     "build:manager:exe": "bun build --compile src/manager-cli.ts --outfile dist/mcpmanager",

@@ -10,6 +10,7 @@
     "status": "bun run --cwd apps/gateway manager status",
     "centralize": "bun run --cwd apps/gateway manager centralize",
     "decentralize": "bun run --cwd apps/gateway manager decentralize -- --apply",
+    "test:playwright-pool": "bun run --cwd apps/gateway test:playwright-pool",
     "dev:desktop": "bun run --cwd apps/desktop tauri dev",
     "build:desktop": "bun run --cwd apps/desktop build",
     "dev:gateway": "bun run --cwd apps/gateway dev",
