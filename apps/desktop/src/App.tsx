@@ -39,6 +39,13 @@ type ApplyResult = {
   registry_path: string;
 };
 
+type ImportResult = {
+  imported_codex: number;
+  imported_claude_desktop: number;
+  registry: Registry;
+  registry_path: string;
+};
+
 function App() {
   const [status, setStatus] = useState<StatusResult | null>(null);
   const [installResult, setInstallResult] = useState<InstallResult | null>(
@@ -51,6 +58,9 @@ function App() {
   const [applyCodex, setApplyCodex] = useState(true);
   const [applyClaudeDesktop, setApplyClaudeDesktop] = useState(true);
   const [applyClaudeCode, setApplyClaudeCode] = useState(false);
+  const [importCodex, setImportCodex] = useState(true);
+  const [importClaudeDesktop, setImportClaudeDesktop] = useState(true);
+  const [lastImport, setLastImport] = useState<ImportResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -157,6 +167,25 @@ function App() {
     }
   }
 
+  async function importFromClients() {
+    setBusy(true);
+    setError(null);
+    setLastImport(null);
+    try {
+      const res = await invoke<ImportResult>("registry_import_from_clients", {
+        codex: importCodex,
+        claude_desktop: importClaudeDesktop,
+      });
+      res.registry.upstreams.sort((a, b) => a.id.localeCompare(b.id));
+      setRegistry(res.registry);
+      setLastImport(res);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   useEffect(() => {
     refreshStatus();
     refreshRegistry();
@@ -251,6 +280,36 @@ function App() {
           <code>claude mcp list</code>) and mcpManager will store it in{" "}
           <code>~/.mcpmanager/registry.json</code>. Toggle enabled/disabled, then apply to clients.
         </p>
+
+        <div style={{ display: "grid", gap: 6, maxWidth: 520, marginBottom: 14 }}>
+          <h3 style={{ margin: 0 }}>Import</h3>
+          <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            <input
+              type="checkbox"
+              checked={importCodex}
+              onChange={(e) => setImportCodex(e.target.checked)}
+              disabled={busy}
+            />
+            Import from Codex (`~/.codex/config.toml`)
+          </label>
+          <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            <input
+              type="checkbox"
+              checked={importClaudeDesktop}
+              onChange={(e) => setImportClaudeDesktop(e.target.checked)}
+              disabled={busy}
+            />
+            Import from Claude Desktop (macOS)
+          </label>
+          <button onClick={importFromClients} disabled={busy}>
+            Import From Existing Configs
+          </button>
+          {lastImport ? (
+            <pre style={{ whiteSpace: "pre-wrap", margin: 0 }}>
+              {JSON.stringify(lastImport, null, 2)}
+            </pre>
+          ) : null}
+        </div>
 
         <div style={{ display: "grid", gap: 8 }}>
           <label>

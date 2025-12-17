@@ -1070,6 +1070,208 @@ fn registry_apply(args: ApplyArgs) -> Result<ApplyResult, String> {
     .map_err(|e| e.to_string())
 }
 
+fn import_registry_from_codex(existing: &mut Registry) -> Result<usize> {
+    let (path, doc) = read_codex_doc()?;
+    if !path.exists() {
+        return Ok(0);
+    }
+    let servers = doc
+        .get("mcp_servers")
+        .and_then(|v| v.as_table())
+        .ok_or_else(|| anyhow!("mcp_servers is not a table"))?;
+
+    let mut count = 0usize;
+    for (id, item) in servers.iter() {
+        if id == "mcpmanager" {
+            continue;
+        }
+        let tbl = match item.as_table() {
+            Some(t) => t,
+            None => continue,
+        };
+        let command = match tbl.get("command").and_then(|v| v.as_str()) {
+            Some(s) => s.to_string(),
+            None => continue,
+        };
+        let args = tbl
+            .get("args")
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let enabled = tbl
+            .get("enabled")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+        let env = tbl
+            .get("env")
+            .and_then(|v| v.as_table())
+            .map(|t| {
+                t.iter()
+                    .filter_map(|(k, v)| v.as_str().map(|s| (k.to_string(), s.to_string())))
+                    .collect::<std::collections::BTreeMap<_, _>>()
+            })
+            .unwrap_or_default();
+        let env_vars = tbl
+            .get("env_vars")
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+
+        let upstream = Upstream {
+            id: id.to_string(),
+            enabled,
+            command,
+            args,
+            env,
+            env_vars,
+        };
+
+        let mut replaced = false;
+        for u in existing.upstreams.iter_mut() {
+            if u.id == upstream.id {
+                *u = upstream.clone();
+                replaced = true;
+                break;
+            }
+        }
+        if !replaced {
+            existing.upstreams.push(upstream);
+        }
+        count += 1;
+    }
+    Ok(count)
+}
+
+fn import_registry_from_claude_desktop(existing: &mut Registry) -> Result<usize> {
+    let path = claude_desktop_config_path()?;
+    if !path.exists() {
+        return Ok(0);
+    }
+    let text = fs::read_to_string(&path).with_context(|| format!("read {:?}", path))?;
+    let v: serde_json::Value = serde_json::from_str(&text).with_context(|| format!("parse JSON {:?}", path))?;
+    let enabled_map = v
+        .get("mcpServers")
+        .and_then(|x| x.as_object())
+        .cloned()
+        .unwrap_or_default();
+    let disabled_map = v
+        .get("mcpServersDisabled")
+        .and_then(|x| x.as_object())
+        .cloned()
+        .unwrap_or_default();
+
+    let mut count = 0usize;
+    for (id, enabled) in [(true, enabled_map), (false, disabled_map)] {
+        for (server_id, server_val) in enabled.iter() {
+            if server_id == "mcpmanager" {
+                continue;
+            }
+            let server = match server_val.as_object() {
+                Some(o) => o,
+                None => continue,
+            };
+            let command = match server.get("command").and_then(|v| v.as_str()) {
+                Some(s) => s.to_string(),
+                None => continue,
+            };
+            let args = server
+                .get("args")
+                .and_then(|v| v.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            let env_obj = server.get("env").and_then(|v| v.as_object()).cloned();
+            let mut env = std::collections::BTreeMap::new();
+            let mut env_vars = Vec::new();
+            if let Some(map) = env_obj {
+                for (k, v) in map.iter() {
+                    if let Some(s) = v.as_str() {
+                        if s == format!("${{{}}}", k) {
+                            env_vars.push(k.clone());
+                        } else {
+                            env.insert(k.clone(), s.to_string());
+                        }
+                    }
+                }
+            }
+
+            let upstream = Upstream {
+                id: server_id.clone(),
+                enabled: id,
+                command,
+                args,
+                env,
+                env_vars,
+            };
+
+            let mut replaced = false;
+            for u in existing.upstreams.iter_mut() {
+                if u.id == upstream.id {
+                    *u = upstream.clone();
+                    replaced = true;
+                    break;
+                }
+            }
+            if !replaced {
+                existing.upstreams.push(upstream);
+            }
+            count += 1;
+        }
+    }
+
+    Ok(count)
+}
+
+#[derive(Debug, Deserialize)]
+struct ImportArgs {
+    codex: bool,
+    claude_desktop: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct ImportResult {
+    imported_codex: usize,
+    imported_claude_desktop: usize,
+    registry: Registry,
+    registry_path: String,
+}
+
+#[tauri::command]
+fn registry_import_from_clients(args: ImportArgs) -> Result<ImportResult, String> {
+    (|| -> Result<ImportResult> {
+        let mut reg = read_registry()?;
+        reg.version = 1;
+        let mut imported_codex = 0usize;
+        let mut imported_claude_desktop = 0usize;
+        if args.codex {
+            imported_codex = import_registry_from_codex(&mut reg)?;
+        }
+        if args.claude_desktop {
+            imported_claude_desktop = import_registry_from_claude_desktop(&mut reg)?;
+        }
+        reg.upstreams.sort_by(|a, b| a.id.cmp(&b.id));
+        write_registry(&reg)?;
+        Ok(ImportResult {
+            imported_codex,
+            imported_claude_desktop,
+            registry: reg,
+            registry_path: registry_path()?.to_string_lossy().to_string(),
+        })
+    })()
+    .map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -1081,6 +1283,7 @@ pub fn run() {
             registry_add_from_snippet,
             registry_set_enabled,
             registry_remove,
+            registry_import_from_clients,
             registry_apply
         ])
         .run(tauri::generate_context!())
@@ -1238,6 +1441,71 @@ env_vars = ["PLAYWRIGHT_BROWSERS_PATH"]
             let json = fs::read_to_string(desktop_path).unwrap();
             let v: serde_json::Value = serde_json::from_str(&json).unwrap();
             assert!(v["mcpServers"]["test-server"].is_object());
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn imports_from_codex_config() {
+        with_temp_home(|home| {
+            let codex = home.join(".codex/config.toml");
+            fs::create_dir_all(codex.parent().unwrap()).unwrap();
+            fs::write(
+                &codex,
+                r#"
+[mcp_servers.foo]
+command = "npx"
+args = ["-y","foo@latest"]
+enabled = false
+
+[mcp_servers.bar]
+command = "node"
+args = ["bar.js"]
+enabled = true
+"#,
+            )
+            .unwrap();
+
+            let mut reg = read_registry().unwrap();
+            let n = import_registry_from_codex(&mut reg).unwrap();
+            assert_eq!(n, 2);
+            assert!(reg.upstreams.iter().any(|u| u.id == "foo" && !u.enabled));
+            assert!(reg.upstreams.iter().any(|u| u.id == "bar" && u.enabled));
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn imports_from_claude_desktop_config() {
+        with_temp_home(|home| {
+            let cfg_path = home
+                .join("Library")
+                .join("Application Support")
+                .join("Claude")
+                .join("claude_desktop_config.json");
+            fs::create_dir_all(cfg_path.parent().unwrap()).unwrap();
+            fs::write(
+                &cfg_path,
+                r#"
+{
+  "mcpServers": {
+    "aaa": { "command": "npx", "args": ["-y","aaa"], "env": { "A": "${A}" } }
+  },
+  "mcpServersDisabled": {
+    "bbb": { "command": "node", "args": ["bbb.js"], "env": {} }
+  }
+}
+"#,
+            )
+            .unwrap();
+
+            let mut reg = read_registry().unwrap();
+            let n = import_registry_from_claude_desktop(&mut reg).unwrap();
+            assert_eq!(n, 2);
+            assert!(reg.upstreams.iter().any(|u| u.id == "aaa" && u.enabled));
+            assert!(reg.upstreams.iter().any(|u| u.id == "bbb" && !u.enabled));
+            let aaa = reg.upstreams.iter().find(|u| u.id == "aaa").unwrap();
+            assert!(aaa.env_vars.iter().any(|v| v == "A"));
         });
     }
 }
