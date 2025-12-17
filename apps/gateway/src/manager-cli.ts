@@ -137,6 +137,7 @@ function renderCodexMcpManagerSection(gatewayPath: string) {
     "MCPMANAGER_TAILSCALE_ALLOW_REUSABLE",
     "MCPMANAGER_TAILSCALE_TAILNET_LOCK",
     "MCPMANAGER_TAILSCALE_TAGS_ALLOW",
+    "MCPMANAGER_PLAYWRIGHT_POOL",
   ] as const) {
     const v = process.env[key];
     if (v && v.length > 0) env[key] = v;
@@ -163,6 +164,7 @@ function renderCodexMcpManagerSection(gatewayPath: string) {
     "MCPMANAGER_TAILSCALE_ALLOW_REUSABLE",
     "MCPMANAGER_TAILSCALE_TAILNET_LOCK",
     "MCPMANAGER_TAILSCALE_TAGS_ALLOW",
+    "MCPMANAGER_PLAYWRIGHT_POOL",
   ];
 
   return (

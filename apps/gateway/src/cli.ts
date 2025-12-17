@@ -15,6 +15,13 @@ import {
 } from "./tailscale/tailscale.js";
 import { readRegistry, type Upstream } from "./registry/registry.js";
 import { audit, checkPolicy } from "./policy/policy.js";
+import {
+  configuredPoolIds,
+  listPoolStatus,
+  poolEnabled,
+  releaseLock,
+  tryAcquireLock,
+} from "./playwright/pool.js";
 
 type ToolResponse = {
   content: any[];
@@ -75,6 +82,7 @@ let tailscale: TailscaleHandle | null = null;
 let upstreams: Upstream[] = [];
 const upstreamClients = new Map<string, Client>();
 const upstreamErrors = new Map<string, string>();
+const heldPlaywrightLeases = new Set<string>();
 let toolRoutes:
   | {
       byToolName: Map<string, { upstreamId: string; upstreamTool: string }>;
@@ -232,6 +240,37 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         description: "Reload ~/.mcpmanager/registry.json and reconnect upstreams.",
         inputSchema: { type: "object", properties: {}, additionalProperties: false },
       },
+      ...(poolEnabled()
+        ? [
+            {
+              name: "playwright_pool.list",
+              description:
+                "List configured Playwright pool slots and whether they are locked (set MCPMANAGER_PLAYWRIGHT_POOL to enable).",
+              inputSchema: { type: "object", properties: {}, additionalProperties: false },
+            },
+            {
+              name: "playwright_pool.reserve",
+              description:
+                "Reserve a Playwright pool slot for this gateway process (exclusive lock across agents).",
+              inputSchema: {
+                type: "object",
+                properties: {
+                  ttlSeconds: { type: "integer", minimum: 30, maximum: 3600, default: 900 },
+                },
+                additionalProperties: false,
+              },
+            },
+            {
+              name: "playwright_pool.release",
+              description: "Release a previously reserved Playwright pool slot.",
+              inputSchema: {
+                type: "object",
+                properties: { upstreamId: { type: "string" } },
+                additionalProperties: false,
+              },
+            },
+          ]
+        : []),
       {
         name: "tailscale.devices.list",
         description:
@@ -337,6 +376,76 @@ server.setRequestHandler(CallToolRequestSchema, async (request): Promise<ToolRes
     return { content: [{ type: "text", text: asJsonText({ ok: true, upstreams }) }] };
   }
 
+  if (name === "playwright_pool.list") {
+    const status = await listPoolStatus(heldPlaywrightLeases);
+    return { content: [{ type: "text", text: asJsonText({ pool: status }) }] };
+  }
+
+  if (name === "playwright_pool.reserve") {
+    const ttlSeconds = Number((args as any)?.ttlSeconds ?? 900);
+    const ttl = Number.isFinite(ttlSeconds) ? Math.min(Math.max(ttlSeconds, 30), 3600) : 900;
+
+    const pool = configuredPoolIds();
+    if (pool.length === 0) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: asJsonText({
+              ok: false,
+              error: "Playwright pool not configured. Set MCPMANAGER_PLAYWRIGHT_POOL=playwright1,playwright2",
+            }),
+          },
+        ],
+      };
+    }
+
+    for (const upstreamId of pool) {
+      const acquired = await tryAcquireLock(upstreamId, ttl);
+      if (acquired.ok) {
+        heldPlaywrightLeases.add(upstreamId);
+        await audit(name, { upstreamId, ttlSeconds: ttl }, { ok: true });
+        return {
+          content: [
+            {
+              type: "text",
+              text: asJsonText({
+                ok: true,
+                upstreamId,
+                ttlSeconds: ttl,
+                usage: `Call tools using the prefix: ${upstreamId}.<tool> (e.g. ${upstreamId}.browser_navigate).`,
+              }),
+            },
+          ],
+        };
+      }
+    }
+
+    await audit(name, args, { ok: false, reason: "No free Playwright pool slots." });
+    return { content: [{ type: "text", text: asJsonText({ ok: false, error: "No free pool slots." }) }] };
+  }
+
+  if (name === "playwright_pool.release") {
+    const upstreamId = String((args as any)?.upstreamId ?? "");
+    if (!upstreamId) {
+      return { content: [{ type: "text", text: asJsonText({ ok: false, error: "upstreamId required" }) }] };
+    }
+    if (!heldPlaywrightLeases.has(upstreamId)) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: asJsonText({ ok: false, error: "Not held by this process." }),
+          },
+        ],
+      };
+    }
+    await releaseLock(upstreamId);
+    heldPlaywrightLeases.delete(upstreamId);
+    await audit(name, { upstreamId }, { ok: true });
+    return { content: [{ type: "text", text: asJsonText({ ok: true }) }] };
+  }
+
   if (name === "tailscale.devices.list") {
     const input = tailscaleListDevicesInput.parse(args);
     const handle = getTailscale();
@@ -390,6 +499,19 @@ server.setRequestHandler(CallToolRequestSchema, async (request): Promise<ToolRes
   const route = routes.byToolName.get(name);
   if (route) {
     const { upstreamId, upstreamTool } = route;
+    if (poolEnabled() && configuredPoolIds().includes(upstreamId) && !heldPlaywrightLeases.has(upstreamId)) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: asJsonText({
+              ok: false,
+              error: `Playwright slot '${upstreamId}' requires reservation. Call playwright_pool.reserve first.`,
+            }),
+          },
+        ],
+      };
+    }
     await audit(name, { upstreamId, upstreamTool, args }, { ok: true });
     const { client } = await getUpstreamClient(upstreamId);
     const res = await client.callTool({ name: upstreamTool, arguments: args as any });

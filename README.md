@@ -41,12 +41,23 @@ Restart Codex / Claude Desktop after setup so they reload the configs.
 
 - `bun run dev:desktop`
 
+## Packaging (no Bun at runtime)
+
+The desktop app bundles `mcpmanager-gateway` as a Tauri sidecar and copies it to `~/.mcpmanager/bin/` on install, so end users don’t need Bun installed. (Bun is still required to build the sidecar during development.)
+
 ## What’s implemented
 
 - A single MCP server `mcpmanager` (stdio) that exposes:
   - `health.ping`
   - `daytona.*` (create/delete sandbox, exec commands)
   - `tailscale.*` (list devices, create auth keys)
+
+## Playwright parallelism (local)
+
+If you run multiple Playwright MCP servers as upstreams, you can enable a simple cross-process reservation lock:
+- Set `MCPMANAGER_PLAYWRIGHT_POOL=playwright1,playwright2` (upstream IDs in `~/.mcpmanager/registry.json`)
+- Call `playwright_pool.reserve` to get an `upstreamId`
+- Use only that prefix for tool calls (e.g. `playwright1.browser_navigate`)
 - Installer that puts the gateway at `~/.mcpmanager/bin/mcpmanager-gateway` and registers it into:
   - Codex: `~/.codex/config.toml`
   - Claude Desktop (macOS): `~/Library/Application Support/Claude/claude_desktop_config.json`

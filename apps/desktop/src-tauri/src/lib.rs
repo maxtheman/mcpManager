@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use tauri::Manager;
 use toml_edit::{value, Array, DocumentMut, Item, Table};
 
 #[derive(Debug, Serialize)]
@@ -109,13 +110,60 @@ fn write_with_backup(path: &Path, contents: &[u8]) -> Result<()> {
     Ok(())
 }
 
-fn ensure_gateway_installed() -> Result<PathBuf> {
+fn find_bundled_gateway(app: &tauri::AppHandle) -> Result<Option<PathBuf>> {
+    let resource_dir = app
+        .path()
+        .resource_dir()
+        .context("resolve app resource_dir")?;
+    if !resource_dir.exists() {
+        return Ok(None);
+    }
+
+    let mut stack = vec![resource_dir];
+    while let Some(dir) = stack.pop() {
+        let entries = match fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                stack.push(p);
+                continue;
+            }
+            if let Some(name) = p.file_name().and_then(|s| s.to_str()) {
+                if name == "mcpmanager-gateway" || name.starts_with("mcpmanager-gateway-") {
+                    return Ok(Some(p));
+                }
+            }
+        }
+    }
+
+    Ok(None)
+}
+
+fn ensure_gateway_installed(app: Option<&tauri::AppHandle>) -> Result<PathBuf> {
     let dest = gateway_install_path()?;
     if dest.exists() {
         return Ok(dest);
     }
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent).with_context(|| format!("create dir {parent:?}"))?;
+    }
+
+    // Packaged installer: copy bundled sidecar if available.
+    if let Some(app) = app {
+        if let Some(bundled) = find_bundled_gateway(app)? {
+            fs::copy(&bundled, &dest).with_context(|| format!("copy {:?} -> {:?}", bundled, dest))?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mut perms = fs::metadata(&dest)?.permissions();
+                perms.set_mode(0o755);
+                fs::set_permissions(&dest, perms)?;
+            }
+            return Ok(dest);
+        }
     }
 
     // Dev-mode installer: build from the local repo if sources exist.
@@ -215,6 +263,7 @@ fn install_codex_gateway(gateway_path: &Path) -> Result<ClientInstallStatus> {
         "MCPMANAGER_TAILSCALE_ALLOW_REUSABLE",
         "MCPMANAGER_TAILSCALE_TAILNET_LOCK",
         "MCPMANAGER_TAILSCALE_TAGS_ALLOW",
+        "MCPMANAGER_PLAYWRIGHT_POOL",
     ] {
         env_vars.push(v);
     }
@@ -261,7 +310,8 @@ fn install_claude_desktop_gateway(gateway_path: &Path) -> Result<ClientInstallSt
         "MCPMANAGER_TAILSCALE_MAX_EXPIRY_SECONDS": "${MCPMANAGER_TAILSCALE_MAX_EXPIRY_SECONDS}",
         "MCPMANAGER_TAILSCALE_ALLOW_REUSABLE": "${MCPMANAGER_TAILSCALE_ALLOW_REUSABLE}",
         "MCPMANAGER_TAILSCALE_TAILNET_LOCK": "${MCPMANAGER_TAILSCALE_TAILNET_LOCK}",
-        "MCPMANAGER_TAILSCALE_TAGS_ALLOW": "${MCPMANAGER_TAILSCALE_TAGS_ALLOW}"
+        "MCPMANAGER_TAILSCALE_TAGS_ALLOW": "${MCPMANAGER_TAILSCALE_TAGS_ALLOW}",
+        "MCPMANAGER_PLAYWRIGHT_POOL": "${MCPMANAGER_PLAYWRIGHT_POOL}"
       }
     });
     cfg.mcpServers.insert("mcpmanager".to_string(), server);
@@ -331,7 +381,7 @@ fn install_claude_code_gateway(gateway_path: &Path) -> Result<ClientInstallStatu
 }
 
 #[tauri::command]
-fn get_status() -> Result<StatusResult, String> {
+fn get_status(_app: tauri::AppHandle) -> Result<StatusResult, String> {
     (|| -> Result<StatusResult> {
         let gateway_path = gateway_install_path()?;
         let gateway = BinaryStatus {
@@ -380,9 +430,9 @@ fn get_status() -> Result<StatusResult, String> {
 }
 
 #[tauri::command]
-fn install_gateway_everywhere() -> Result<InstallResult, String> {
+fn install_gateway_everywhere(app: tauri::AppHandle) -> Result<InstallResult, String> {
     (|| -> Result<InstallResult> {
-        let gateway_path = ensure_gateway_installed()?;
+        let gateway_path = ensure_gateway_installed(Some(&app))?;
         let codex = install_codex_gateway(&gateway_path).unwrap_or(ClientInstallStatus {
             detected: true,
             installed: false,
@@ -502,7 +552,7 @@ mod tests {
             let dest = home.join(".mcpmanager/bin/mcpmanager-gateway");
             fs::create_dir_all(dest.parent().unwrap()).unwrap();
             fs::write(&dest, b"bin").unwrap();
-            let got = ensure_gateway_installed().unwrap();
+            let got = ensure_gateway_installed(None).unwrap();
             assert_eq!(got, dest);
         });
     }
