@@ -58,49 +58,39 @@ async function agentRun(agentId: string, env: Record<string, string>, gatewayExe
   const client = new Client({ name: `pool-test-${agentId}`, version: "0.1.0" }, { capabilities: {} });
   await client.connect(transport);
 
-  const reserve = await callText(client, "playwright_pool.reserve", { ttlSeconds: 180 });
-  if (!reserve.json?.ok) {
+  const session = await callText(client, "playwright_pool.session.start", { ttlSeconds: 180 });
+  if (!session.json?.ok) {
     await client.close();
-    die(`[${agentId}] reserve failed: ${reserve.text}`);
+    die(`[${agentId}] session.start failed: ${session.text}`);
   }
-  const upstreamId = String(reserve.json.upstreamId);
-
-  const tools = await client.listTools();
-  const toolNames = new Set((tools.tools ?? []).map((t) => t.name));
-  const navigateTool =
-    toolNames.has(`${upstreamId}.browser_navigate`)
-      ? `${upstreamId}.browser_navigate`
-      : `${upstreamId}.playwright.browser_navigate`;
-  const snapshotTool =
-    toolNames.has(`${upstreamId}.browser_snapshot`)
-      ? `${upstreamId}.browser_snapshot`
-      : `${upstreamId}.playwright.browser_snapshot`;
-
-  if (!toolNames.has(navigateTool)) {
-    const diag = await callText(client, "mcpmanager.upstreams.list", {});
-    await client.close();
-    die(
-      `[${agentId}] expected tool not found for upstream ${upstreamId}.\nTried:\n- ${upstreamId}.browser_navigate\n- ${upstreamId}.playwright.browser_navigate\nUpstream diagnostics:\n${diag.text}`,
-    );
-  }
+  const upstreamId = String(session.json.upstreamId);
+  const sessionId = String(session.json.sessionId);
 
   const url = agentId === "A" ? "https://example.com/" : "https://example.org/";
-  const nav = await callText(client, navigateTool, { url });
+  const nav = await callText(client, "playwright_pool.session.call", {
+    sessionId,
+    tool: "browser_navigate",
+    arguments: { url },
+  });
   if (!nav.text) {
     await client.close();
     die(`[${agentId}] navigate returned empty output`);
   }
 
-  const snap = await callText(client, snapshotTool, {});
+  const snap = await callText(client, "playwright_pool.session.call", {
+    sessionId,
+    tool: "browser_snapshot",
+    arguments: {},
+  });
   if (!snap.text) {
     await client.close();
     die(`[${agentId}] snapshot returned empty output`);
   }
 
-  const rel = await callText(client, "playwright_pool.release", { upstreamId });
-  if (!rel.json?.ok) {
+  const end = await callText(client, "playwright_pool.session.end", { sessionId });
+  if (!end.json?.ok) {
     await client.close();
-    die(`[${agentId}] release failed: ${rel.text}`);
+    die(`[${agentId}] session.end failed: ${end.text}`);
   }
 
   await client.close();
