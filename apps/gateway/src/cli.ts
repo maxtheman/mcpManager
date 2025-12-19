@@ -230,116 +230,30 @@ function turnsToPrompt(turns: Array<{ role: string; text: string }>): string {
     .join("\n");
 }
 
-type ToolDefinition = {
-  name: string;
-  description?: string;
-  parameters?: unknown;
-};
-
 function partsToStreamContent(parts: InputPart[]): string | Array<Record<string, unknown>> {
   if (parts.length === 1 && parts[0].type === "text") {
     return parts[0].text;
   }
   return parts.map((part) => {
     if (part.type === "text") return { type: "text", text: part.text };
+    const mediaType =
+      part.mime_type ??
+      (part.type === "image"
+        ? "image/png"
+        : part.type === "audio"
+          ? "audio/wav"
+          : part.type === "video"
+            ? "video/mp4"
+            : "application/pdf");
     return {
       type: part.type,
-      data: part.data,
-      ...(part.mime_type ? { mime_type: part.mime_type } : {}),
-    };
-  });
-}
-
-function normalizeTools(
-  value: unknown,
-): { ok: true; tools: ToolDefinition[] } | { ok: false; error: string } {
-  if (value == null) return { ok: true, tools: [] };
-  if (!Array.isArray(value)) return { ok: false, error: "tools must be an array" };
-  const tools: ToolDefinition[] = [];
-  for (const entry of value) {
-    if (!entry || typeof entry !== "object") return { ok: false, error: "tool entries must be objects" };
-    const v = entry as any;
-    const name = typeof v.name === "string" ? v.name.trim() : "";
-    if (!name) return { ok: false, error: "tool entries must include a name" };
-    const type = typeof v.type === "string" ? v.type : "function";
-    if (type !== "function") return { ok: false, error: `unsupported tool type: ${type}` };
-    const description = typeof v.description === "string" ? v.description : undefined;
-    const parameters = v.parameters ?? undefined;
-    tools.push({ name, description, parameters });
-  }
-  return { ok: true, tools };
-}
-
-function normalizeToolChoice(
-  value: unknown,
-  tools: ToolDefinition[],
-): { ok: true; choice?: string } | { ok: false; error: string } {
-  if (value == null) return { ok: true, choice: undefined };
-  const byName = new Set(tools.map((tool) => tool.name));
-  if (typeof value === "string") {
-    const choice = value.trim();
-    if (!choice) return { ok: true, choice: undefined };
-    if (choice === "auto" || choice === "required" || choice === "none") return { ok: true, choice };
-    if (!byName.has(choice)) return { ok: false, error: `Unknown tool_choice: ${choice}` };
-    return { ok: true, choice };
-  }
-  if (typeof value === "object" && typeof (value as any).name === "string") {
-    const choice = String((value as any).name).trim();
-    if (!choice) return { ok: true, choice: undefined };
-    if (!byName.has(choice)) return { ok: false, error: `Unknown tool_choice: ${choice}` };
-    return { ok: true, choice };
-  }
-  return { ok: false, error: "tool_choice must be a string or { name }" };
-}
-
-function buildToolSchema(
-  tools: ToolDefinition[],
-  toolChoice?: string,
-): { schema: unknown; requiresTool: boolean } | null {
-  if (tools.length === 0 || toolChoice === "none") return null;
-  const toolSchemas = tools.map((tool) => {
-    const parameters = tool.parameters ?? { type: "object", properties: {} };
-    return {
-      type: "object",
-      properties: {
-        tool: { const: tool.name },
-        arguments: parameters,
+      source: {
+        type: "base64",
+        media_type: mediaType,
+        data: part.data,
       },
-      required: ["tool", "arguments"],
-      additionalProperties: false,
     };
   });
-
-  if (toolChoice && toolChoice !== "auto" && toolChoice !== "required") {
-    const chosen = toolSchemas.find((schema) => (schema as any).properties?.tool?.const === toolChoice);
-    return chosen ? { schema: chosen, requiresTool: true } : null;
-  }
-
-  if (toolChoice === "required") {
-    return {
-      schema: toolSchemas.length === 1 ? toolSchemas[0] : { oneOf: toolSchemas },
-      requiresTool: true,
-    };
-  }
-
-  const textVariant = {
-    type: "object",
-    properties: { text: { type: "string" } },
-    required: ["text"],
-    additionalProperties: false,
-  };
-  const variants = [...toolSchemas, textVariant];
-  return {
-    schema: variants.length === 1 ? variants[0] : { oneOf: variants },
-    requiresTool: false,
-  };
-}
-
-function buildToolInstructions(tools: ToolDefinition[], toolChoice?: string): string | undefined {
-  if (tools.length === 0 || toolChoice === "none") return undefined;
-  const heading = toolChoice === "required" ? "You must call one of these tools." : "Tools are available:";
-  const toolLines = tools.map((tool) => `- ${tool.name}${tool.description ? `: ${tool.description}` : ""}`);
-  return [heading, ...toolLines].join("\n");
 }
 
 async function runCommand(
@@ -450,7 +364,6 @@ async function runCommandWithInput(
 function parseStreamJson(stdout: string): {
   events: any[];
   resultText?: string;
-  structuredOutput?: unknown;
   usage?: unknown;
   sessionId?: string;
   error?: { message: string };
@@ -474,13 +387,11 @@ function parseStreamJson(stdout: string): {
     }
   }
 
-  let structuredOutput: unknown = undefined;
   let resultText: string | undefined;
   let usage: unknown = undefined;
   let sessionId: string | undefined = undefined;
   if (lastResult) {
     if (typeof lastResult.result === "string") resultText = lastResult.result;
-    if ("structured_output" in lastResult) structuredOutput = lastResult.structured_output;
     if (lastResult.usage) usage = lastResult.usage;
     if (lastResult.modelUsage) usage = { ...(usage as any), modelUsage: lastResult.modelUsage };
     if (typeof lastResult.session_id === "string") sessionId = lastResult.session_id;
@@ -497,7 +408,6 @@ function parseStreamJson(stdout: string): {
   return {
     events,
     resultText,
-    structuredOutput,
     usage,
     sessionId,
     error: errorMessage ? { message: errorMessage } : undefined,
@@ -522,7 +432,6 @@ async function runClaudeInteraction(options: {
   prompt: string;
   parts: InputPart[];
   useStream: boolean;
-  toolSchema?: { schema: unknown; requiresTool: boolean } | null;
   sessionId?: string;
   timeoutMs: number;
 }): Promise<{
@@ -568,7 +477,12 @@ async function runClaudeInteraction(options: {
       status: run.ok ? "completed" : "failed",
       usage,
       sessionId: sessionFromCli ?? options.sessionId,
-      raw: parsed ?? { stdout: run.stdout, stderr: run.stderr, exit_code: run.exitCode },
+      raw: {
+        stdout: run.stdout,
+        stderr: run.stderr,
+        exit_code: run.exitCode,
+        ...(parsed ? { parsed } : {}),
+      },
       error: run.ok
         ? undefined
         : {
@@ -585,7 +499,6 @@ async function runClaudeInteraction(options: {
   if (options.agent) cliArgs.push("--agent", options.agent);
   if (options.systemInstruction) cliArgs.push("--system-prompt", options.systemInstruction);
   if (options.sessionId) cliArgs.push("--session-id", options.sessionId);
-  if (options.toolSchema) cliArgs.push("--json-schema", JSON.stringify(options.toolSchema.schema));
 
   const stdinText = buildStreamInput(options.parts);
   const run = await runCommandWithInput("claude", cliArgs, stdinText, options.timeoutMs);
@@ -594,33 +507,12 @@ async function runClaudeInteraction(options: {
 
   let outputs: InteractionRecord["outputs"] = [];
   let status: InteractionRecord["status"] = "completed";
-  if (parsed.structuredOutput !== undefined) {
-    const structured = parsed.structuredOutput as any;
-    if (structured && typeof structured === "object" && typeof structured.tool === "string") {
-      outputs = [
-        {
-          type: "function_call",
-          name: structured.tool,
-          arguments: structured.arguments ?? {},
-        },
-      ];
-      status = "requires_action";
-    } else if (structured && typeof structured.text === "string") {
-      outputs = [{ type: "text", text: structured.text }];
-    } else if (typeof structured === "string") {
-      outputs = [{ type: "text", text: structured }];
-    } else if (structured != null) {
-      outputs = [{ type: "text", text: asJsonText(structured) }];
-    }
-  }
-  if (outputs.length === 0 && parsed.resultText) {
+  if (parsed.resultText) {
     outputs = [{ type: "text", text: parsed.resultText }];
   }
 
   if (!run.ok || parsed.error) {
     status = "failed";
-  } else if (status !== "requires_action" && options.toolSchema?.requiresTool) {
-    status = outputs.some((o) => o.type === "function_call") ? "requires_action" : status;
   }
 
   return {
@@ -862,8 +754,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "interactions.create",
-        description:
-          "Create an interaction backed by the Claude CLI (supports tools, background runs, and basic multimodal inputs).",
+        description: "Create an interaction backed by the Claude CLI (text in/out, optional multimodal inputs).",
         inputSchema: {
           type: "object",
           properties: {
@@ -872,8 +763,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             input: {},
             previous_interaction_id: { type: "string" },
             system_instruction: { type: "string" },
-            tools: { type: "array", items: { type: "object" } },
-            tool_choice: {},
+            stream: { type: "boolean" },
             background: { type: "boolean" },
             store: { type: "boolean", default: true },
             timeout_ms: { type: "integer", minimum: 1000 },
@@ -1022,6 +912,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request): Promise<ToolRes
       typeof (args as any)?.system_instruction === "string"
         ? String((args as any).system_instruction)
         : undefined;
+    const stream = (args as any)?.stream === true;
     const store = (args as any)?.store !== false;
     const background = (args as any)?.background === true;
     const timeoutMsRaw = (args as any)?.timeout_ms;
@@ -1030,20 +921,19 @@ server.setRequestHandler(CallToolRequestSchema, async (request): Promise<ToolRes
         ? Math.floor(timeoutMsRaw)
         : 20000;
 
-    const toolNormalization = normalizeTools((args as any)?.tools);
-    if (!toolNormalization.ok) {
+    if ((args as any)?.tools != null || (args as any)?.tool_choice != null) {
       return {
-        content: [{ type: "text", text: asJsonText({ ok: false, error: toolNormalization.error }) }],
+        content: [
+          {
+            type: "text",
+            text: asJsonText({
+              ok: false,
+              error: "tools/tool_choice are not supported; Claude CLI manages tools directly",
+            }),
+          },
+        ],
       };
     }
-    const tools = toolNormalization.tools;
-    const toolChoiceNormalization = normalizeToolChoice((args as any)?.tool_choice, tools);
-    if (!toolChoiceNormalization.ok) {
-      return {
-        content: [{ type: "text", text: asJsonText({ ok: false, error: toolChoiceNormalization.error }) }],
-      };
-    }
-    const toolChoice = toolChoiceNormalization.choice;
 
     const normalized = normalizeInput(input);
     if (!normalized.ok) {
@@ -1090,10 +980,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request): Promise<ToolRes
       sessionId = prev.session_id;
     }
 
-    const toolInstructions = buildToolInstructions(tools, toolChoice);
-    const combinedSystemInstruction = [systemInstruction, toolInstructions].filter(Boolean).join("\n\n") || undefined;
-    const toolSchema = buildToolSchema(tools, toolChoice);
-    const useStream = normalized.hasNonText || Boolean(toolSchema);
+    const combinedSystemInstruction = systemInstruction || undefined;
+    const useStream = normalized.hasNonText || stream;
 
     const baseInteraction: InteractionRecord = {
       id: randomUUID(),
@@ -1117,7 +1005,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request): Promise<ToolRes
         prompt: normalized.prompt,
         parts: normalized.parts,
         useStream,
-        toolSchema,
         sessionId,
         timeoutMs,
       });

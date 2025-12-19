@@ -92,34 +92,6 @@ async function main() {
     die(`Expected same session_id, got ${firstSession} then ${secondSession}`);
   }
 
-  const toolCall = await callText(client, "interactions.create", {
-    input: "Use the echo tool to repeat 'hello'.",
-    tools: [
-      {
-        type: "function",
-        name: "echo",
-        description: "Echo back the input message.",
-        parameters: {
-          type: "object",
-          properties: { message: { type: "string" } },
-          required: ["message"],
-          additionalProperties: false,
-        },
-      },
-    ],
-  });
-  if (!toolCall.json?.id || !Array.isArray(toolCall.json?.outputs)) {
-    await client.close();
-    die(`interactions.create (tool call) failed: ${toolCall.text}`);
-  }
-  const toolId = String(toolCall.json.id);
-  createdIds.push(toolId);
-  const toolOutput = toolCall.json.outputs.find((o: any) => o?.type === "function_call");
-  if (!toolOutput || toolOutput.name !== "echo") {
-    await client.close();
-    die(`Expected function_call echo output, got: ${toolCall.text}`);
-  }
-
   const background = await callText(client, "interactions.create", {
     input: "Reply with a short greeting.",
     background: true,
