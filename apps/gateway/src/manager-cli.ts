@@ -5,32 +5,25 @@ import { existsSync } from "node:fs";
 import { chmodSync, copyFileSync, mkdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { readRegistry, writeRegistry, type Upstream } from "./registry/registry.js";
 
 type Cmd =
-  | "doctor"
   | "install"
-  | "status"
   | "help"
-  | "build-gateway"
   | "centralize"
   | "decentralize";
 
 const argsSchema = z.object({
-  cmd: z.enum(["doctor", "install", "status", "help", "build-gateway", "centralize", "decentralize"]),
-  fix: z.boolean().default(false),
+  cmd: z.enum(["install", "help", "centralize", "decentralize"]),
   apply: z.boolean().default(false),
   verbose: z.boolean().default(false),
 });
 
 function parseArgs(argv: string[]): z.infer<typeof argsSchema> {
   const cmd = (argv[2] as Cmd | undefined) ?? "help";
-  const fix = argv.includes("--fix");
   const apply = argv.includes("--apply");
   const verbose = argv.includes("--verbose") || argv.includes("-v");
-  return argsSchema.parse({ cmd, fix, apply, verbose });
+  return argsSchema.parse({ cmd, apply, verbose });
 }
 
 function homeDir(): string {
@@ -124,20 +117,9 @@ function tomlString(value: string): string {
 function renderCodexMcpManagerSection(gatewayPath: string) {
   const env: Record<string, string> = {};
   for (const key of [
-    "DAYTONA_API_KEY",
-    "DAYTONA_API_URL",
-    "DAYTONA_SERVER_URL",
-    "DAYTONA_TARGET",
-    "TAILSCALE_API_KEY",
-    "TAILSCALE_TAILNET",
     "MCPMANAGER_REGISTRY_PATH",
-    "MCPMANAGER_POLICY_MODE",
-    "MCPMANAGER_TAILSCALE_ALLOW_KEYS",
-    "MCPMANAGER_TAILSCALE_MAX_EXPIRY_SECONDS",
-    "MCPMANAGER_TAILSCALE_ALLOW_REUSABLE",
-    "MCPMANAGER_TAILSCALE_TAILNET_LOCK",
-    "MCPMANAGER_TAILSCALE_TAGS_ALLOW",
     "MCPMANAGER_PLAYWRIGHT_POOL",
+    "MCPMANAGER_INTERACTIONS_DIR",
   ] as const) {
     const v = process.env[key];
     if (v && v.length > 0) env[key] = v;
@@ -151,20 +133,9 @@ function renderCodexMcpManagerSection(gatewayPath: string) {
       : null;
 
   const envVars = [
-    "DAYTONA_API_KEY",
-    "DAYTONA_API_URL",
-    "DAYTONA_SERVER_URL",
-    "DAYTONA_TARGET",
-    "TAILSCALE_API_KEY",
-    "TAILSCALE_TAILNET",
     "MCPMANAGER_REGISTRY_PATH",
-    "MCPMANAGER_POLICY_MODE",
-    "MCPMANAGER_TAILSCALE_ALLOW_KEYS",
-    "MCPMANAGER_TAILSCALE_MAX_EXPIRY_SECONDS",
-    "MCPMANAGER_TAILSCALE_ALLOW_REUSABLE",
-    "MCPMANAGER_TAILSCALE_TAILNET_LOCK",
-    "MCPMANAGER_TAILSCALE_TAGS_ALLOW",
     "MCPMANAGER_PLAYWRIGHT_POOL",
+    "MCPMANAGER_INTERACTIONS_DIR",
   ];
 
   return (
@@ -612,19 +583,9 @@ async function installClaudeDesktopConfig(gatewayPath: string) {
     command: gatewayPath,
     args: [],
     env: {
-      DAYTONA_API_KEY: envValue("DAYTONA_API_KEY"),
-      DAYTONA_API_URL: envValue("DAYTONA_API_URL"),
-      DAYTONA_SERVER_URL: envValue("DAYTONA_SERVER_URL"),
-      DAYTONA_TARGET: envValue("DAYTONA_TARGET"),
-      TAILSCALE_API_KEY: envValue("TAILSCALE_API_KEY"),
-      TAILSCALE_TAILNET: envValue("TAILSCALE_TAILNET"),
       MCPMANAGER_REGISTRY_PATH: envValue("MCPMANAGER_REGISTRY_PATH"),
-      MCPMANAGER_POLICY_MODE: envValue("MCPMANAGER_POLICY_MODE"),
-      MCPMANAGER_TAILSCALE_ALLOW_KEYS: envValue("MCPMANAGER_TAILSCALE_ALLOW_KEYS"),
-      MCPMANAGER_TAILSCALE_MAX_EXPIRY_SECONDS: envValue("MCPMANAGER_TAILSCALE_MAX_EXPIRY_SECONDS"),
-      MCPMANAGER_TAILSCALE_ALLOW_REUSABLE: envValue("MCPMANAGER_TAILSCALE_ALLOW_REUSABLE"),
-      MCPMANAGER_TAILSCALE_TAILNET_LOCK: envValue("MCPMANAGER_TAILSCALE_TAILNET_LOCK"),
-      MCPMANAGER_TAILSCALE_TAGS_ALLOW: envValue("MCPMANAGER_TAILSCALE_TAGS_ALLOW"),
+      MCPMANAGER_PLAYWRIGHT_POOL: envValue("MCPMANAGER_PLAYWRIGHT_POOL"),
+      MCPMANAGER_INTERACTIONS_DIR: envValue("MCPMANAGER_INTERACTIONS_DIR"),
     },
   };
   await writeFileWithBackup(filePath, JSON.stringify(doc, null, 2) + "\n");
@@ -645,57 +606,6 @@ async function installClaudeCodeConfig(gatewayPath: string) {
   return { ok: true, reason: res.stdout.trim() };
 }
 
-async function smokePingGateway(gatewayPath: string) {
-  const transport = new StdioClientTransport({ command: gatewayPath });
-  const client = new Client({ name: "mcpmanager-doctor", version: "0.1.0" }, { capabilities: {} });
-  await client.connect(transport);
-  const tools = await client.listTools();
-  const ping = await client.callTool({ name: "health.ping", arguments: {} });
-  await client.close();
-  const first = (ping as any)?.content?.[0];
-  return {
-    tools: tools.tools?.map((t) => t.name) ?? [],
-    pingText: typeof first?.text === "string" ? first.text : "",
-  };
-}
-
-async function status() {
-  const gwInstalled = gatewayInstallPath();
-  const gwExists = existsSync(gwInstalled);
-  const codex = codexConfigPath();
-  const claudeDesktop = claudeDesktopConfigPath();
-
-  const codexInstalled = await (async () => {
-    if (!existsSync(codex)) return false;
-    try {
-      const text = await Bun.file(codex).text();
-      return /^\[mcp_servers\.mcpmanager\]\s*$/m.test(text);
-    } catch {
-      return false;
-    }
-  })();
-
-  const claudeDesktopInstalled = await (async () => {
-    if (!existsSync(claudeDesktop)) return false;
-    try {
-      const doc = JSON.parse(await Bun.file(claudeDesktop).text());
-      return Boolean(doc?.mcpServers?.mcpmanager);
-    } catch {
-      return false;
-    }
-  })();
-
-  return {
-    gateway: { path: gwInstalled, exists: gwExists },
-    codex: { path: codex, exists: existsSync(codex), installed: codexInstalled },
-    claudeDesktop: {
-      path: claudeDesktop,
-      exists: existsSync(claudeDesktop),
-      installed: claudeDesktopInstalled,
-    },
-  };
-}
-
 function printHelp() {
   console.log(
     [
@@ -703,22 +613,16 @@ function printHelp() {
       "",
       "Usage:",
       "  bun run manager help",
-      "  bun run manager status",
-      "  bun run manager build-gateway",
       "  bun run manager install",
-      "  bun run manager doctor [--fix]",
       "  bun run manager centralize [--apply]",
       "  bun run manager decentralize --apply",
       "",
       "Flags:",
-      "  --fix       Run install steps during doctor",
       "  --apply     Apply config changes (centralize)",
       "  -v,--verbose Show command output",
       "",
       "Environment:",
-      "  DAYTONA_API_KEY, DAYTONA_SERVER_URL (or DAYTONA_API_URL), DAYTONA_TARGET",
-      "  TAILSCALE_API_KEY, TAILSCALE_TAILNET",
-      "  MCPMANAGER_POLICY_MODE, MCPMANAGER_TAILSCALE_ALLOW_KEYS, MCPMANAGER_TAILSCALE_MAX_EXPIRY_SECONDS",
+      "  MCPMANAGER_REGISTRY_PATH, MCPMANAGER_PLAYWRIGHT_POOL, MCPMANAGER_INTERACTIONS_DIR",
     ].join("\n"),
   );
 }
@@ -728,17 +632,6 @@ async function main() {
 
   if (args.cmd === "help") {
     printHelp();
-    return;
-  }
-
-  if (args.cmd === "status") {
-    console.log(JSON.stringify(await status(), null, 2));
-    return;
-  }
-
-  if (args.cmd === "build-gateway") {
-    await buildGateway(args.verbose);
-    console.log(`Built gateway: ${gatewayBuiltPath()}`);
     return;
   }
 
@@ -764,37 +657,6 @@ async function main() {
     return;
   }
 
-  if (args.cmd === "doctor") {
-    const before = await status();
-    if (args.fix) {
-      await mainInstall(args.verbose);
-    }
-    const after = await status();
-    const gwPath = gatewayInstallPath();
-    const gatewayOk = existsSync(gwPath);
-    const ping = gatewayOk ? await smokePingGateway(gwPath) : null;
-
-    console.log(
-      JSON.stringify(
-        {
-          before,
-          after,
-          gatewayPing: ping,
-          env: {
-            DAYTONA_API_KEY: Boolean(process.env.DAYTONA_API_KEY),
-            DAYTONA_SERVER_URL: Boolean(process.env.DAYTONA_SERVER_URL || process.env.DAYTONA_API_URL),
-            DAYTONA_TARGET: process.env.DAYTONA_TARGET ?? null,
-            TAILSCALE_API_KEY: Boolean(process.env.TAILSCALE_API_KEY),
-            TAILSCALE_TAILNET: process.env.TAILSCALE_TAILNET ?? null,
-          },
-        },
-        null,
-        2,
-      ),
-    );
-    return;
-  }
-
   if (args.cmd === "centralize") {
     const res = await centralize({ apply: args.apply, verbose: args.verbose });
     console.log(JSON.stringify(res, null, 2));
@@ -806,14 +668,6 @@ async function main() {
     console.log(JSON.stringify(res, null, 2));
     return;
   }
-}
-
-async function mainInstall(verbose: boolean) {
-  await buildGateway(verbose);
-  const gw = await installGatewayBinary();
-  await installCodexConfig(gw);
-  await installClaudeDesktopConfig(gw);
-  await installClaudeCodeConfig(gw);
 }
 
 await main();

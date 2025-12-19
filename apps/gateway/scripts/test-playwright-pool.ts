@@ -12,6 +12,15 @@ function die(msg: string): never {
   process.exit(1);
 }
 
+function isTruthy(value: string | undefined): boolean {
+  if (!value) return false;
+  return value === "1" || value.toLowerCase() === "true" || value.toLowerCase() === "yes";
+}
+
+function log(agentId: string, message: string) {
+  console.log(`[${agentId}] ${message}`);
+}
+
 async function which(cmd: string): Promise<string | null> {
   const proc = Bun.spawn(["/usr/bin/env", "sh", "-lc", `command -v ${cmd}`], {
     stdout: "pipe",
@@ -43,6 +52,34 @@ function parseJsonText(contentText: string): Json {
   }
 }
 
+type Barrier = {
+  ready: () => void;
+  waitForAll: () => Promise<void>;
+  waitForRelease: () => Promise<void>;
+  release: () => void;
+};
+
+function createBarrier(count: number): Barrier {
+  let readyCount = 0;
+  let resolveReady: (() => void) | null = null;
+  let resolveRelease: (() => void) | null = null;
+  const allReady = new Promise<void>((resolve) => {
+    resolveReady = resolve;
+  });
+  const released = new Promise<void>((resolve) => {
+    resolveRelease = resolve;
+  });
+  return {
+    ready: () => {
+      readyCount += 1;
+      if (readyCount >= count) resolveReady?.();
+    },
+    waitForAll: () => allReady,
+    waitForRelease: () => released,
+    release: () => resolveRelease?.(),
+  };
+}
+
 async function callText(client: Client, name: string, args: Record<string, unknown>) {
   const res = await client.callTool({ name, arguments: args as any });
   const first = (res as any)?.content?.[0];
@@ -50,13 +87,19 @@ async function callText(client: Client, name: string, args: Record<string, unkno
   return { text, json: parseJsonText(text) };
 }
 
-async function agentRun(agentId: string, env: Record<string, string>, gatewayExe: string) {
+async function agentRun(
+  agentId: string,
+  env: Record<string, string>,
+  gatewayExe: string,
+  barrier: Barrier,
+) {
   const transport = new StdioClientTransport({
     command: gatewayExe,
     env: { ...process.env, ...env },
   });
   const client = new Client({ name: `pool-test-${agentId}`, version: "0.1.0" }, { capabilities: {} });
   await client.connect(transport);
+  log(agentId, "connected");
 
   const session = await callText(client, "playwright_pool.session.start", { ttlSeconds: 180 });
   if (!session.json?.ok) {
@@ -65,8 +108,14 @@ async function agentRun(agentId: string, env: Record<string, string>, gatewayExe
   }
   const upstreamId = String(session.json.upstreamId);
   const sessionId = String(session.json.sessionId);
+  const tabIndex = Number(session.json.tabIndex ?? -1);
+  log(agentId, `session.start ok (upstream=${upstreamId}, tab=${tabIndex})`);
+
+  barrier.ready();
+  await barrier.waitForRelease();
 
   const url = agentId === "A" ? "https://example.com/" : "https://example.org/";
+  log(agentId, `navigate ${url}`);
   const nav = await callText(client, "playwright_pool.session.call", {
     sessionId,
     tool: "browser_navigate",
@@ -77,6 +126,7 @@ async function agentRun(agentId: string, env: Record<string, string>, gatewayExe
     die(`[${agentId}] navigate returned empty output`);
   }
 
+  log(agentId, "snapshot");
   const snap = await callText(client, "playwright_pool.session.call", {
     sessionId,
     tool: "browser_snapshot",
@@ -86,15 +136,33 @@ async function agentRun(agentId: string, env: Record<string, string>, gatewayExe
     await client.close();
     die(`[${agentId}] snapshot returned empty output`);
   }
+  log(agentId, `snapshot bytes=${snap.text.length}`);
 
   const end = await callText(client, "playwright_pool.session.end", { sessionId });
   if (!end.json?.ok) {
     await client.close();
     die(`[${agentId}] session.end failed: ${end.text}`);
   }
+  log(agentId, "session.end ok");
 
   await client.close();
+  log(agentId, "closed");
   return { agentId, upstreamId };
+}
+
+async function probeReserve(env: Record<string, string>, gatewayExe: string) {
+  const transport = new StdioClientTransport({
+    command: gatewayExe,
+    env: { ...process.env, ...env },
+  });
+  const client = new Client({ name: "pool-test-probe", version: "0.1.0" }, { capabilities: {} });
+  await client.connect(transport);
+  const res = await callText(client, "playwright_pool.reserve", { ttlSeconds: 60 });
+  if (res.json?.ok && res.json?.upstreamId) {
+    await callText(client, "playwright_pool.release", { upstreamId: res.json.upstreamId });
+  }
+  await client.close();
+  return res;
 }
 
 async function main() {
@@ -107,6 +175,11 @@ async function main() {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "mcpmanager-pw-pool-"));
   const registryPath = path.join(tmp, "registry.json");
 
+  const headed = isTruthy(process.env.MCPMANAGER_PLAYWRIGHT_HEADED) || process.env.MCPMANAGER_PLAYWRIGHT_HEADLESS === "0";
+  const commonArgs = ["-y", "@playwright/mcp@latest", "--isolated"];
+  if (!headed) commonArgs.push("--headless");
+  if (headed) console.log("Headed mode enabled (MCPMANAGER_PLAYWRIGHT_HEADED=1).");
+
   const registry = {
     version: 1,
     upstreams: [
@@ -114,7 +187,7 @@ async function main() {
         id: "pw1",
         enabled: true,
         command: "bunx",
-        args: ["-y", "@playwright/mcp@latest"],
+        args: commonArgs,
         env: {
           // Avoid npx cache races between parallel servers.
           NPM_CONFIG_CACHE: path.join(tmp, "npm-cache", "pw1"),
@@ -128,7 +201,7 @@ async function main() {
         id: "pw2",
         enabled: true,
         command: "bunx",
-        args: ["-y", "@playwright/mcp@latest"],
+        args: commonArgs,
         env: {
           NPM_CONFIG_CACHE: path.join(tmp, "npm-cache", "pw2"),
           npm_config_cache: path.join(tmp, "npm-cache", "pw2"),
@@ -149,9 +222,27 @@ async function main() {
   console.log("Running 2 parallel agents against a 2-slot Playwright pool...");
   console.log(`- temp HOME: ${tmp}`);
   console.log(`- registry: ${registryPath}`);
+  console.log(`- headless: ${!headed}`);
 
-  const [a, b] = await Promise.all([agentRun("A", env, gatewayExe), agentRun("B", env, gatewayExe)]);
+  const barrier = createBarrier(2);
+  const runA = agentRun("A", env, gatewayExe, barrier);
+  const runB = agentRun("B", env, gatewayExe, barrier);
+
+  await barrier.waitForAll();
+  console.log("[probe] both sessions started; attempting reserve (should fail)");
+  const probe = await probeReserve(env, gatewayExe);
+  if (probe.json?.ok !== false) {
+    die(`Expected reserve to fail while both slots are held, got: ${probe.text}`);
+  }
+  console.log("[probe] reserve failed as expected");
+
+  barrier.release();
+  const [a, b] = await Promise.all([runA, runB]);
   if (a.upstreamId === b.upstreamId) die(`Expected different upstreamIds, got ${a.upstreamId}`);
+  const pool = new Set(["pw1", "pw2"]);
+  if (!pool.has(a.upstreamId) || !pool.has(b.upstreamId)) {
+    die(`Expected upstreams in {pw1,pw2}, got ${a.upstreamId}, ${b.upstreamId}`);
+  }
 
   console.log("OK");
   console.log(`- agent A reserved: ${a.upstreamId}`);

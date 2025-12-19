@@ -2,19 +2,18 @@
   "name": "mcpmanager",
   "private": true,
   "workspaces": [
-    "apps/*"
+    "apps/gateway",
+    "apps/chrome-extension/server"
   ],
   "scripts": {
-    "setup": "bun run --cwd apps/gateway doctor -- --fix",
-    "doctor": "bun run --cwd apps/gateway doctor",
-    "status": "bun run --cwd apps/gateway manager status",
+    "setup": "bun run --cwd apps/gateway manager install",
     "centralize": "bun run --cwd apps/gateway manager centralize",
     "decentralize": "bun run --cwd apps/gateway manager decentralize -- --apply",
     "test:playwright-pool": "bun run --cwd apps/gateway test:playwright-pool",
-    "dev:desktop": "bun run --cwd apps/desktop tauri dev",
-    "build:desktop": "bun run --cwd apps/desktop build",
-    "test:desktop": "bun run --cwd apps/desktop test",
+    "test:llm-shell": "bun run --cwd apps/gateway test:llm-shell",
+    "test:interactions-claude": "bun run --cwd apps/gateway test:interactions-claude",
     "dev:gateway": "bun run --cwd apps/gateway dev",
-    "build:gateway:exe": "bun run --cwd apps/gateway build:exe"
+    "build:gateway:exe": "bun run --cwd apps/gateway build:exe",
+    "build:manager:exe": "bun run --cwd apps/gateway build:manager:exe"
   }
 }
