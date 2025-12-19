@@ -56,16 +56,16 @@ Shell smoke test (runs `--help`/`--version`, and attempts a "hello world" prompt
 ## Interactions API (Claude-backed)
 
 MCP tools:
-- `interactions.create` (supports `previous_interaction_id`, `tools`, and `background`)
+- `interactions.create` (supports `previous_interaction_id`, `background`, and `stream`)
 - `interactions.get`
 - `interactions.delete`
 
 Notes:
 - `background: true` requires `store: true` and returns `status: "in_progress"` until complete.
-- Tool calls return `outputs` with `type: "function_call"` and `status: "requires_action"`.
+- `tools`/`tool_choice` are not supported; the Claude CLI manages tools directly.
 - Multimodal inputs accept content parts like `{ type: "image", data, mime_type }`.
 
-Smoke test (creates a session, follows up, tool call, background run, reads, deletes):
+Smoke test (creates a session, follows up, background run, reads, deletes):
 - `bun run test:interactions-claude`
   - `MCPMANAGER_IMAGE_TEST=1` to include an optional image input check.
 

@@ -92,34 +92,49 @@ async function main() {
     die(`Expected same session_id, got ${firstSession} then ${secondSession}`);
   }
 
-  const background = await callText(client, "interactions.create", {
-    input: "Reply with a short greeting.",
-    background: true,
-    timeout_ms: 8000,
-  });
-  if (!background.json?.id) {
-    await client.close();
-    die(`interactions.create (background) failed: ${background.text}`);
+  const backgroundRequests = [
+    {
+      input: "Write a 200-word summary of the Pacific Northwest.",
+      background: true,
+      timeout_ms: 12000,
+    },
+    {
+      input: "Write a 200-word summary of the Mojave Desert.",
+      background: true,
+      timeout_ms: 12000,
+    },
+  ];
+  const backgroundIds: string[] = [];
+  for (const req of backgroundRequests) {
+    const background = await callText(client, "interactions.create", req);
+    if (!background.json?.id) {
+      await client.close();
+      die(`interactions.create (background) failed: ${background.text}`);
+    }
+    const backgroundId = String(background.json.id);
+    createdIds.push(backgroundId);
+    backgroundIds.push(backgroundId);
+    if (background.json.status !== "in_progress") {
+      await client.close();
+      die(`Expected background status in_progress, got: ${background.text}`);
+    }
   }
-  const backgroundId = String(background.json.id);
-  createdIds.push(backgroundId);
-  if (background.json.status !== "in_progress") {
-    await client.close();
-    die(`Expected background status in_progress, got: ${background.text}`);
-  }
-  let backgroundRecord: any = null;
+  const backgroundRecords = new Map<string, any>();
   for (let attempt = 0; attempt < 30; attempt += 1) {
     await wait(1000);
-    const poll = await callText(client, "interactions.get", { id: backgroundId });
-    if (!poll.json?.status || poll.json.status === "in_progress") {
-      continue;
+    for (const id of backgroundIds) {
+      if (backgroundRecords.has(id)) continue;
+      const poll = await callText(client, "interactions.get", { id });
+      if (!poll.json?.status || poll.json.status === "in_progress") {
+        continue;
+      }
+      backgroundRecords.set(id, poll.json);
     }
-    backgroundRecord = poll.json;
-    break;
+    if (backgroundRecords.size === backgroundIds.length) break;
   }
-  if (!backgroundRecord) {
+  if (backgroundRecords.size !== backgroundIds.length) {
     await client.close();
-    die("Background interaction did not complete in time.");
+    die("Background interactions did not complete in time.");
   }
 
   const fetched = await callText(client, "interactions.get", { id: firstId });
