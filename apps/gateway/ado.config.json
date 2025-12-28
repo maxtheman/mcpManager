@@ -1,0 +1,86 @@
+{
+  "repoName": "mcpManager-gateway",
+  "repoRoot": ".",
+  "tsconfigPath": "tsconfig.json",
+  "helix": {
+    "endpoint": "http://localhost:6969"
+  },
+  "agentfs": {
+    "rootDir": ".agentfs"
+  },
+  "includeGlobs": [
+    "src/**/*.ts"
+  ],
+  "excludeGlobs": [
+    "**/node_modules/**",
+    "**/dist/**",
+    "**/*.d.ts",
+    "**/scripts/**"
+  ],
+  "boundaries": {
+    "groups": [
+      {
+        "id": "entry",
+        "name": "CLI Entry Points",
+        "includeGlobs": ["src/entry/**/*.ts"]
+      },
+      {
+        "id": "core",
+        "name": "Core Business Logic",
+        "includeGlobs": ["src/core/**/*.ts"]
+      },
+      {
+        "id": "infra",
+        "name": "Infrastructure",
+        "includeGlobs": ["src/infra/**/*.ts"]
+      },
+      {
+        "id": "shared",
+        "name": "Shared Utilities",
+        "includeGlobs": ["src/shared/**/*.ts"]
+      }
+    ],
+    "rules": [
+      {
+        "fromGroup": "entry",
+        "toGroup": "core",
+        "allow": true
+      },
+      {
+        "fromGroup": "entry",
+        "toGroup": "infra",
+        "allow": true
+      },
+      {
+        "fromGroup": "core",
+        "toGroup": "infra",
+        "allow": true
+      },
+      {
+        "fromGroup": "core",
+        "toGroup": "shared",
+        "allow": true
+      },
+      {
+        "fromGroup": "infra",
+        "toGroup": "shared",
+        "allow": true
+      },
+      {
+        "fromGroup": "infra",
+        "toGroup": "core",
+        "allow": false
+      },
+      {
+        "fromGroup": "shared",
+        "toGroup": "core",
+        "allow": false
+      },
+      {
+        "fromGroup": "shared",
+        "toGroup": "infra",
+        "allow": false
+      }
+    ]
+  }
+}

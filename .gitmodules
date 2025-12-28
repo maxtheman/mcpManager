@@ -1,0 +1,3 @@
+[submodule "toad"]
+	path = toad
+	url = https://github.com/maxtheman/toad.git
