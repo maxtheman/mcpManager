@@ -9,7 +9,7 @@ type ShellResult = {
 
 function shellEscape(value: string): string {
   if (value.length === 0) return "''";
-  return `'${value.replace(/'/g, `'\"'\"'`)}'`;
+  return "'" + value.replace(/'/g, "'\"'\"'") + "'";
 }
 
 function splitCommandLine(commandLine: string): string[] {
@@ -83,8 +83,8 @@ async function runShellCommand(cmd: string, timeoutMs = 20000): Promise<ShellRes
   }, timeoutMs);
 
   const [stdout, stderr, exitCode] = await Promise.all([
-    proc.stdout ? proc.stdout.text() : Promise.resolve(""),
-    proc.stderr ? proc.stderr.text() : Promise.resolve(""),
+    proc.stdout ? new Response(proc.stdout).text() : Promise.resolve(""),
+    proc.stderr ? new Response(proc.stderr).text() : Promise.resolve(""),
     proc.exited,
   ]);
   clearTimeout(timeout);
@@ -106,8 +106,8 @@ async function commandExists(program: string): Promise<boolean> {
 }
 
 function detectHelloArgs(program: string, helpText: string): { args: string[]; stdin?: string } | null {
-  const argsKey = `MCPMANAGER_${program.toUpperCase()}_HELLO_ARGS`;
-  const stdinKey = `MCPMANAGER_${program.toUpperCase()}_HELLO_STDIN`;
+  const argsKey = `MX_${program.toUpperCase()}_HELLO_ARGS`;
+  const stdinKey = `MX_${program.toUpperCase()}_HELLO_STDIN`;
   const envArgs = process.env[argsKey];
   if (envArgs && envArgs.trim().length > 0) {
     return { args: splitCommandLine(envArgs), stdin: process.env[stdinKey] };
@@ -143,7 +143,7 @@ function detectHelloArgs(program: string, helpText: string): { args: string[]; s
 }
 
 function getTimeoutMs(): number {
-  const raw = process.env.MCPMANAGER_LLM_TIMEOUT_MS;
+  const raw = process.env.MX_LLM_TIMEOUT_MS;
   if (!raw) return 20000;
   const value = Number(raw);
   return Number.isFinite(value) && value > 0 ? value : 20000;
@@ -152,7 +152,7 @@ function getTimeoutMs(): number {
 async function runHello(program: string, helpText: string) {
   const hello = detectHelloArgs(program, helpText);
   if (!hello) {
-    return { ok: false, skipped: true, reason: "No prompt flag detected; set MCPMANAGER_<TOOL>_HELLO_ARGS." };
+    return { ok: false, skipped: true, reason: "No prompt flag detected; set MX_<TOOL>_HELLO_ARGS." };
   }
   const cmd = buildShellCommand(program, hello.args, hello.stdin);
   return runShellCommand(cmd, getTimeoutMs());
@@ -198,3 +198,5 @@ async function main() {
 }
 
 await main();
+
+export {};

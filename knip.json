@@ -1,0 +1,28 @@
+{
+  "$schema": "https://unpkg.com/knip@5/schema.json",
+  "workspaces": {
+    ".": {
+      "entry": ["scripts/reliability/check-*.ts"],
+      "project": ["scripts/reliability/**/*.ts"],
+      "ignore": ["**/node_modules/**", "**/dist/**", "**/build/**"],
+      "ignoreDependencies": ["lint-staged"]
+    },
+    "apps/gateway": {
+      "entry": [
+        "src/entry/cli.ts",
+        "src/entry/manager-cli.ts",
+        "src/entry/skills-cli.ts",
+        "scripts/test-*.ts"
+      ],
+      "project": ["src/**/*.{ts,tsx}", "scripts/**/*.ts"],
+      "ignore": ["**/dist/**", "**/build/**", "**/node_modules/**"]
+    }
+  },
+  "rules": {
+    "files": "error",
+    "exports": "error",
+    "types": "error",
+    "dependencies": "error",
+    "devDependencies": "error"
+  }
+}

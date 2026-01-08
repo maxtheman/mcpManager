@@ -7,40 +7,39 @@ This directory contains the HelixDB schema and queries for the gateway.
 - `schema.hx` - Node and edge type definitions
 - `queries.hx` - HelixQL queries for all CRUD operations
 
-## Known Issues & Workarounds
+## Query Pattern: Return Whole Nodes
+
+All queries in this repo use `RETURN node` instead of projections like `RETURN node::{ field: _::{field} }`.
+
+**Why?**
+1. Projections (`::{ ... }`) exclude the `id` field from responses
+2. Returning whole nodes (`RETURN node`) includes `id` automatically
+3. This enables proper entity chaining (create -> use id)
+
+```helixql
+// CORRECT - returns id + all fields
+QUERY CreatePool(pool_key: String, kind: String, now_ms: U64) =>
+  pool <- AddN<Pool>({...})
+  RETURN pool
+
+// WRONG - excludes id field
+QUERY CreatePool(pool_key: String, kind: String, now_ms: U64) =>
+  pool <- AddN<Pool>({...})
+  RETURN pool::{ pool_key: _::{pool_key}, kind: _::{kind} }
+```
+
+## Known Issues
 
 ### `_::ID` Codegen Bug (HelixDB v2.1.10)
 
-**Problem**: Using `_::ID` in RETURN statements causes Rust codegen to generate duplicate `id` fields, failing cargo compilation.
+Using `id: _::ID` in projection RETURN statements causes Rust codegen to generate duplicate `id` fields.
 
 ```helixql
-// BAD - causes duplicate field error
+// CAUSES RUST COMPILE ERROR
 RETURN user::{ id: _::ID, name: _::{name} }
 ```
 
-**Workaround**: Omit `id: _::ID` from RETURN statements. HelixDB auto-includes an `id` field in the generated Rust struct.
-
-```helixql
-// GOOD - id is auto-included
-RETURN user::{ name: _::{name}, email: _::{email} }
-```
-
-**Status**: Bug reported via Helix CLI auto-issue. Workaround applied to all queries in this repo.
-
-### UPDATE Operations Fail (HelixDB v2.1.10)
-
-**Problem**: All UPDATE operations fail with "Graph error: Unsupported value type", regardless of parameter types.
-
-```helixql
-// FAILS - even with String-only params
-s <- N<Snapshot>({snapshot_key: snapshot_key})
-updated <- s::UPDATE({status: status})
-RETURN updated::{ status: _::{status} }
-```
-
-**Workaround**: Set final values at creation time instead of updating. For snapshots, we set `status: "complete"` in `CreateSnapshotByRepoName` since files are added atomically.
-
-**Status**: Unresolved. UPDATE queries are defined but non-functional.
+**Solution**: Return whole nodes (`RETURN node`) instead of projections.
 
 ## Commands
 

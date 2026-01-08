@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "defaults": {
+    "codex": true,
+    "claude": true
+  },
+  "skills": {
+    "blast-radius": true,
+    "coordinate-changes": true,
+    "extract-contract": true,
+    "map-territory": true,
+    "trace-to-root": true,
+    "verify-seams": true
+  }
+}

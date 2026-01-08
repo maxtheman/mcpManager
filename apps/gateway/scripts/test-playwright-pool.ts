@@ -7,6 +7,14 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 
 type Json = any;
 
+function filterEnv(env: NodeJS.ProcessEnv): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const [k, v] of Object.entries(env)) {
+    if (v !== undefined) result[k] = v;
+  }
+  return result;
+}
+
 function die(msg: string): never {
   console.error(msg);
   process.exit(1);
@@ -95,13 +103,13 @@ async function agentRun(
 ) {
   const transport = new StdioClientTransport({
     command: gatewayExe,
-    env: { ...process.env, ...env },
+    env: { ...filterEnv(process.env), ...env },
   });
   const client = new Client({ name: `pool-test-${agentId}`, version: "0.1.0" }, { capabilities: {} });
   await client.connect(transport);
   log(agentId, "connected");
 
-  const session = await callText(client, "playwright_pool.session.start", { ttlSeconds: 180 });
+  const session = await callText(client, "playwright_pool_session_start", { ttlSeconds: 180 });
   if (!session.json?.ok) {
     await client.close();
     die(`[${agentId}] session.start failed: ${session.text}`);
@@ -116,7 +124,7 @@ async function agentRun(
 
   const url = agentId === "A" ? "https://example.com/" : "https://example.org/";
   log(agentId, `navigate ${url}`);
-  const nav = await callText(client, "playwright_pool.session.call", {
+  const nav = await callText(client, "playwright_pool_session_call", {
     sessionId,
     tool: "browser_navigate",
     arguments: { url },
@@ -127,7 +135,7 @@ async function agentRun(
   }
 
   log(agentId, "snapshot");
-  const snap = await callText(client, "playwright_pool.session.call", {
+  const snap = await callText(client, "playwright_pool_session_call", {
     sessionId,
     tool: "browser_snapshot",
     arguments: {},
@@ -138,7 +146,7 @@ async function agentRun(
   }
   log(agentId, `snapshot bytes=${snap.text.length}`);
 
-  const end = await callText(client, "playwright_pool.session.end", { sessionId });
+  const end = await callText(client, "playwright_pool_session_end", { sessionId });
   if (!end.json?.ok) {
     await client.close();
     die(`[${agentId}] session.end failed: ${end.text}`);
@@ -153,13 +161,13 @@ async function agentRun(
 async function probeReserve(env: Record<string, string>, gatewayExe: string) {
   const transport = new StdioClientTransport({
     command: gatewayExe,
-    env: { ...process.env, ...env },
+    env: { ...filterEnv(process.env), ...env },
   });
   const client = new Client({ name: "pool-test-probe", version: "0.1.0" }, { capabilities: {} });
   await client.connect(transport);
-  const res = await callText(client, "playwright_pool.reserve", { ttlSeconds: 60 });
+  const res = await callText(client, "playwright_pool_reserve", { ttlSeconds: 60 });
   if (res.json?.ok && res.json?.upstreamId) {
-    await callText(client, "playwright_pool.release", { upstreamId: res.json.upstreamId });
+    await callText(client, "playwright_pool_release", { upstreamId: res.json.upstreamId });
   }
   await client.close();
   return res;
@@ -169,16 +177,16 @@ async function main() {
   const bunx = await which("bunx");
   if (!bunx) die("Missing `bunx` on PATH. Install Bun, then retry.");
 
-  const gatewayExe = path.join(import.meta.dir, "..", "dist", "mcpmanager-gateway");
+  const gatewayExe = path.join(import.meta.dir, "..", "dist", "Mx-gateway");
   await buildGatewayIfMissing(gatewayExe);
 
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "mcpmanager-pw-pool-"));
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "mx-pw-pool-"));
   const registryPath = path.join(tmp, "registry.json");
 
-  const headed = isTruthy(process.env.MCPMANAGER_PLAYWRIGHT_HEADED) || process.env.MCPMANAGER_PLAYWRIGHT_HEADLESS === "0";
+  const headed = isTruthy(process.env.MX_PLAYWRIGHT_HEADED) || process.env.MX_PLAYWRIGHT_HEADLESS === "0";
   const commonArgs = ["-y", "@playwright/mcp@latest", "--isolated"];
   if (!headed) commonArgs.push("--headless");
-  if (headed) console.log("Headed mode enabled (MCPMANAGER_PLAYWRIGHT_HEADED=1).");
+  if (headed) console.log("Headed mode enabled (MX_PLAYWRIGHT_HEADED=1).");
 
   const registry = {
     version: 1,
@@ -215,8 +223,8 @@ async function main() {
 
   const env = {
     HOME: tmp,
-    MCPMANAGER_REGISTRY_PATH: registryPath,
-    MCPMANAGER_PLAYWRIGHT_POOL: "pw1,pw2",
+    MX_REGISTRY_PATH: registryPath,
+    MX_PLAYWRIGHT_POOL: "pw1,pw2",
   };
 
   console.log("Running 2 parallel agents against a 2-slot Playwright pool...");

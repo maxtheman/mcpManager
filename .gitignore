@@ -1,8 +1,6 @@
-**/node_modules/
-**/dist/
-**/.DS_Store
-**/target/
-**/.tauri/
-**/.vite/
-**/*.log
-
+.tmp/
+apps/gateway/.tmp/
+apps/gateway/screenshots/
+node_modules/
+apps/gateway/node_modules/
+apps/gateway/dist/

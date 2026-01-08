@@ -1,28 +1,31 @@
 {
-  "name": "@mcpmanager/gateway",
+  "name": "@mx/gateway",
   "private": true,
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "bun --hot src/cli.ts",
-    "manager": "bun src/manager-cli.ts",
-    "install:clients": "bun src/manager-cli.ts install",
+    "dev": "bun --hot src/entry/cli.ts",
+    "manager": "bun src/entry/manager-cli.ts",
+    "install:clients": "bun src/entry/manager-cli.ts install",
+    "skills": "bun src/entry/skills-cli.ts",
     "test:playwright-pool": "bun scripts/test-playwright-pool.ts",
+    "test:playwright-pool-scale": "bun scripts/test-playwright-pool-scale.ts",
     "test:llm-shell": "bun scripts/test-llm-shell.ts",
     "test:interactions-claude": "bun scripts/test-interactions-claude.ts",
-    "build": "bun build src/cli.ts --outdir dist --target bun",
-    "build:exe": "bun build --compile src/cli.ts --outfile dist/mcpmanager-gateway",
-    "build:manager:exe": "bun build --compile src/manager-cli.ts --outfile dist/mcpmanager",
+    "build": "bun build src/entry/cli.ts --outdir dist --target bun",
+    "build:exe": "bun build --compile src/entry/cli.ts --outfile dist/Mx-gateway --external electron --external chromium-bidi",
+    "build:manager:exe": "bun build --compile src/entry/manager-cli.ts --outfile dist/Mx",
     "lint": "bunx eslint .",
     "typecheck": "bunx tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
+    "playwright": "^1.57.0",
     "zod": "^3.25.76"
   },
   "devDependencies": {
     "bun-types": "^1.3.3",
-    "@types/node": "^24.3.0",
+    "@types/node": "^25.0.3",
     "typescript": "~5.8.3"
   }
 }

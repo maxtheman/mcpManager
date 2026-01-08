@@ -1,19 +1,50 @@
 {
-  "name": "mcpmanager",
+  "name": "mx",
+  "type": "module",
   "private": true,
   "workspaces": [
-    "apps/gateway",
-    "apps/chrome-extension/server"
+    "apps/gateway"
   ],
   "scripts": {
+    "typecheck": "bun run --cwd apps/gateway typecheck",
+    "lint": "eslint .",
+    "knip": "knip",
+    "check:sheriff": "sheriff verify",
+    "check:crud": "bun scripts/reliability/check-crud-coverage.ts",
+    "check:ids": "bun scripts/reliability/check-id-types.ts",
+    "check:flow": "bun scripts/reliability/check-flow-discipline.ts",
+    "check:gauntlet": "bun run --silent typecheck && bun run --silent lint && bun run --silent knip && bun run --silent check:sheriff && bun run --silent check:crud && bun run --silent check:ids && bun run --silent check:flow",
     "setup": "bun run --cwd apps/gateway manager install",
     "centralize": "bun run --cwd apps/gateway manager centralize",
     "decentralize": "bun run --cwd apps/gateway manager decentralize -- --apply",
     "test:playwright-pool": "bun run --cwd apps/gateway test:playwright-pool",
+    "test:playwright-pool-scale": "bun run --cwd apps/gateway test:playwright-pool-scale",
     "test:llm-shell": "bun run --cwd apps/gateway test:llm-shell",
     "test:interactions-claude": "bun run --cwd apps/gateway test:interactions-claude",
     "dev:gateway": "bun run --cwd apps/gateway dev",
     "build:gateway:exe": "bun run --cwd apps/gateway build:exe",
-    "build:manager:exe": "bun run --cwd apps/gateway build:manager:exe"
+    "build:manager:exe": "bun run --cwd apps/gateway build:manager:exe",
+    "skills": "bun apps/gateway/src/entry/skills-cli.ts",
+    "prepare": "husky"
+  },
+  "lint-staged": {
+    "*.{ts,tsx,js,jsx}": "eslint --max-warnings=0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.2",
+    "@softarc/eslint-plugin-sheriff": "^0.19.6",
+    "@softarc/sheriff-core": "^0.19.6",
+    "@typescript-eslint/eslint-plugin": "^8.50.0",
+    "@typescript-eslint/parser": "^8.50.0",
+    "eslint": "^9.39.2",
+    "eslint-plugin-import": "^2.32.0",
+    "eslint-plugin-promise": "^7.2.1",
+    "eslint-plugin-unused-imports": "^4.3.0",
+    "globals": "^16.5.0",
+    "husky": "^9.1.7",
+    "knip": "^5.76.2",
+    "lint-staged": "^16.2.7",
+    "ts-morph": "^27.0.2",
+    "typescript": "^5.9.3"
   }
 }
